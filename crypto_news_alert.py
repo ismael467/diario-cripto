@@ -369,7 +369,9 @@ def detect_coins(text):
     # Tickers tipo $XYZ o (XYZ) que no estén en la watchlist
     for m in re.findall(r"\$([A-Z]{2,10})\b|\(([A-Z]{2,10})\)", text):
         s = m[0] or m[1]
-        if s not in found and s not in ("USD", "SEC", "ETF", "CEO", "US", "EU", "UK", "ICE", "ET"):
+        if s not in found and s not in ("USD", "SEC", "ETF", "CEO", "US", "EU", "UK", "ICE", "ET",
+                                        "EST", "UTC", "GMT", "CET", "NYSE", "CME", "FED", "FOMC",
+                                        "CPI", "GDP", "IPO", "AI"):
             found.append(s)
     return found
 
@@ -478,7 +480,7 @@ def process(raw_items, check_moved=True, con=None):
         pts, tags, sent, coins = score(it)
         # Tema del día: si una moneda acumula noticias, la narrativa está creciendo
         hot = max((coverage_24h(con, c) for c in coins), default=0)
-        if hot >= 2:
+        if hot >= 2 and "flujos ETF" not in tags:   # los flujos de ETF no son tema del día
             pts += 3
             tags.append(f"tema del día ({hot + 1} noticias en 24 h)")
         if pts >= BRIEF_MIN:
