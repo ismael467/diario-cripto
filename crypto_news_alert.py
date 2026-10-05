@@ -76,6 +76,11 @@ RSS_FEEDS = [
     ("Blockworks", "https://blockworks.co/feed", 0),
 ]
 
+# Canales públicos de Telegram (versión web t.me/s/, sin login): (nombre, usuario del canal, peso base)
+TELEGRAM_CHANNELS = [
+    ("Wu Blockchain", "wublockchainenglish", 1),
+]
+
 # Watchlist: símbolo -> (id CoinGecko, [alias / nombres del proyecto])
 WATCHLIST = {
     "BTC":  ("bitcoin", ["bitcoin", "btc"]),
@@ -147,6 +152,8 @@ TAG_CAT = {
 
 # Fuentes primarias: el anuncio ES la noticia, no hace falta confirmación de terceros
 OFFICIAL_SOURCES = ("Binance Listing", "Trump (Truth Social)")
+# Canales de Telegram: nunca oficiales, salen "sin confirmar" salvo que otra fuente hable de la misma moneda
+TELEGRAM_SOURCES = {name for name, _, _ in TELEGRAM_CHANNELS}
 
 # Rumores y predicciones: se penalizan (regla editorial: hecho ≠ opinión ≠ predicción)
 TOKENIZED_STOCKS_RE = r"tokeni[sz]ed stocks?|xstocks|stock tokens?|equit(y|ies)"
@@ -249,6 +256,8 @@ def verification(con, it):
         return "oficial", 1
     if "rumor" in it["tags"]:
         return "sin confirmar", 1
+    if not it["coins"] and it["source"] in TELEGRAM_SOURCES:   # canal de Telegram sin moneda: nada que confirmar
+        return "sin confirmar", 1
     if not it["coins"]:
         return "", 1
     srcs = sources_for(con, it["coins"], it["ts"], it["id"]) | {it["source"]}
@@ -314,8 +323,35 @@ def fetch_binance_listings():
     return items
 
 
+def fetch_telegram_channels():
+    """Mensajes de las últimas 48 h de los canales públicos de TELEGRAM_CHANNELS (t.me/s/<usuario>)."""
+    items = []
+    cutoff = datetime.now(TZ) - timedelta(hours=48)
+    for name, user, base in TELEGRAM_CHANNELS:
+        try:
+            r = requests.get(f"https://t.me/s/{user}", headers=UA, timeout=15)
+            r.raise_for_status()
+            for block in re.split(r'(?=<div class="tgme_widget_message[ "][^>]*data-post=")', r.text)[1:]:
+                post = re.search(r'data-post="([^"]+)"', block).group(1)
+                when = re.search(r'<time[^>]*datetime="([^"]+)"', block)
+                body = re.search(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', block, re.S)
+                if not when or not body or datetime.fromisoformat(when.group(1)) < cutoff:
+                    continue
+                text = re.sub(r"<br\s*/?>", "\n", body.group(1))
+                text = html.unescape(re.sub(r"<[^>]+>", "", text))
+                lines = [l.strip() for l in text.split("\n") if l.strip()]
+                if not lines:
+                    continue
+                items.append({"id": post, "source": name, "title": lines[0],
+                              "text": " ".join(lines[1:])[:600],
+                              "link": f"https://t.me/{post}", "base": base})
+        except Exception as ex:
+            log(f"Error en {name} (Telegram): {ex}")
+    return items
+
+
 def collect():
-    return fetch_binance_listings() + fetch_rss()
+    return fetch_binance_listings() + fetch_rss() + fetch_telegram_channels()
 
 # ───────────────────────── PUNTUACIÓN ─────────────────────────
 
