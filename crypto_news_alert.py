@@ -149,6 +149,7 @@ TAG_CAT = {
 OFFICIAL_SOURCES = ("Binance Listing", "Trump (Truth Social)")
 
 # Rumores y predicciones: se penalizan (regla editorial: hecho ≠ opinión ≠ predicción)
+TOKENIZED_STOCKS_RE = r"tokeni[sz]ed stocks?|xstocks|stock tokens?|equit(y|ies)"
 RUMOR_RE = r"\brumou?rs?\b|\breportedly\b|\bsources say\b|\bunconfirmed\b|\bspeculat"
 PREDICTION_RE = (r"price prediction|price forecast|price analysis|could (reach|hit|soar|explode)|"
                  r"will (reach|hit) \$|\bto \$\d|\d+x (gains|potential)|next 100x|top \d+ (altcoins|coins|cryptos) to buy")
@@ -349,7 +350,13 @@ def score(item):
             sent += s
 
     coins = detect_coins(text)
-    pts += min(len(coins), 3) * 2
+    # Acciones tokenizadas (ej. "Adds Adobe (ADBEB), Hewlett Packard (HPEB)..."): no son cripto
+    if re.search(TOKENIZED_STOCKS_RE, item["title"].lower()) or \
+            len(re.findall(r"\(([A-Z]{2,10})\)", item["title"])) >= 4:
+        return 0, ["acciones tokenizadas"], 0, coins
+    known = [c for c in coins if c in WATCHLIST]
+    pts += min(len(known), 3) * 2
+    pts += min((len(coins) - len(known)) * 2, 2)   # tickers fuera de la watchlist: máx. 2 puntos
 
     if item["source"].startswith("Trump") and coins:
         pts += 5
