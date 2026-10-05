@@ -155,8 +155,11 @@ OFFICIAL_SOURCES = ("Binance Listing", "Trump (Truth Social)")
 # Canales de Telegram: nunca oficiales, salen "sin confirmar" salvo que otra fuente hable de la misma moneda
 TELEGRAM_SOURCES = {name for name, _, _ in TELEGRAM_CHANNELS}
 
+# Acciones tokenizadas: no son cripto, puntúan 0
+TOKENIZED_STOCKS_RE = r"tokeni[sz]ed (\S+ ){0,2}stocks?|xstocks|stock tokens?|equit(y|ies)"
+# Flujos diarios/semanales de ETF: dato rutinario, no catalizador
+ETF_FLOWS_RE = r"\bnet (in|out)flows?\b"
 # Rumores y predicciones: se penalizan (regla editorial: hecho ≠ opinión ≠ predicción)
-TOKENIZED_STOCKS_RE = r"tokeni[sz]ed stocks?|xstocks|stock tokens?|equit(y|ies)"
 RUMOR_RE = r"\brumou?rs?\b|\breportedly\b|\bsources say\b|\bunconfirmed\b|\bspeculat"
 PREDICTION_RE = (r"price prediction|price forecast|price analysis|could (reach|hit|soar|explode)|"
                  r"will (reach|hit) \$|\bto \$\d|\d+x (gains|potential)|next 100x|top \d+ (altcoins|coins|cryptos) to buy")
@@ -366,7 +369,7 @@ def detect_coins(text):
     # Tickers tipo $XYZ o (XYZ) que no estén en la watchlist
     for m in re.findall(r"\$([A-Z]{2,10})\b|\(([A-Z]{2,10})\)", text):
         s = m[0] or m[1]
-        if s not in found and s not in ("USD", "SEC", "ETF", "CEO", "US", "EU", "UK"):
+        if s not in found and s not in ("USD", "SEC", "ETF", "CEO", "US", "EU", "UK", "ICE", "ET"):
             found.append(s)
     return found
 
@@ -403,6 +406,9 @@ def score(item):
 
     if re.search(PREDICTION_RE, low):          # predicciones de precio: no son noticia
         return 0, ["predicción"], 0, coins
+    if re.search(ETF_FLOWS_RE, low) and "etf" in low:
+        pts -= 4
+        tags.append("flujos ETF")
     if re.search(RUMOR_RE, low):
         pts -= 3
         tags.append("rumor")
