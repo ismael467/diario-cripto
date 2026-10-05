@@ -1,0 +1,4 @@
+__pycache__/
+*.tmp
+/periodico.html
+/seen_news.db

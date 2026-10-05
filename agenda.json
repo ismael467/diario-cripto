@@ -1,0 +1,14 @@
+[
+  {"fecha": "2026-10-07", "hora": "14:00", "tz": "America/New_York", "evento": "Actas de la Fed (reunión de septiembre)", "impacto": "medio", "tipo": "macro"},
+  {"fecha": "2026-10-14", "hora": "08:30", "tz": "America/New_York", "evento": "IPC EE. UU. (septiembre)", "impacto": "alto", "tipo": "macro"},
+  {"fecha": "2026-10-28", "hora": "14:00", "tz": "America/New_York", "evento": "Fed: decisión de tipos (FOMC)", "impacto": "alto", "tipo": "macro"},
+  {"fecha": "2026-10-28", "hora": "14:30", "tz": "America/New_York", "evento": "Fed: rueda de prensa", "impacto": "alto", "tipo": "macro"},
+  {"fecha": "2026-11-06", "hora": "08:30", "tz": "America/New_York", "evento": "Empleo EE. UU. (NFP, octubre)", "impacto": "alto", "tipo": "macro"},
+  {"fecha": "2026-11-10", "hora": "08:30", "tz": "America/New_York", "evento": "IPC EE. UU. (octubre)", "impacto": "alto", "tipo": "macro"},
+  {"fecha": "2026-12-04", "hora": "08:30", "tz": "America/New_York", "evento": "Empleo EE. UU. (NFP, noviembre)", "impacto": "alto", "tipo": "macro"},
+  {"fecha": "2026-12-09", "hora": "14:00", "tz": "America/New_York", "evento": "Fed: decisión de tipos + proyecciones (FOMC)", "impacto": "alto", "tipo": "macro"},
+  {"fecha": "2026-12-09", "hora": "14:30", "tz": "America/New_York", "evento": "Fed: rueda de prensa", "impacto": "alto", "tipo": "macro"},
+  {"fecha": "2026-12-10", "hora": "08:30", "tz": "America/New_York", "evento": "IPC EE. UU. (noviembre)", "impacto": "alto", "tipo": "macro"},
+  {"fecha": "2027-01-08", "hora": "08:30", "tz": "America/New_York", "evento": "Empleo EE. UU. (NFP, diciembre) · previsto", "impacto": "alto", "tipo": "macro"},
+  {"fecha": "2027-01-27", "hora": "14:00", "tz": "America/New_York", "evento": "Fed: decisión de tipos (FOMC) · provisional", "impacto": "alto", "tipo": "macro"}
+]

@@ -1,0 +1,43 @@
+name: Diario Cripto
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # cada 15 min (GitHub puede retrasarlo unos minutos)
+  workflow_dispatch:          # botón "Run workflow" para lanzarlo a mano
+
+permissions:
+  contents: write
+
+concurrency:
+  group: diario-cripto
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Buscar noticias, avisar y actualizar el periódico
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DB_PATH: data/seen_news.db
+          PERIODICO_PATH: docs/index.html
+        run: python crypto_news_alert.py --once
+
+      - name: Guardar estado y periódico
+        run: |
+          git config user.name "diario-cripto-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/seen_news.db docs/index.html
+          git diff --cached --quiet || git commit -m "Diario Cripto $(date -u +'%Y-%m-%d %H:%M')"
+          git push
