@@ -354,7 +354,7 @@ def score(item):
     if re.search(TOKENIZED_STOCKS_RE, item["title"].lower()) or \
             len(re.findall(r"\(([A-Z]{2,10})\)", item["title"])) >= 4 or \
             (item["source"] == "Binance Listing" and   # Binance usa sufijo B: ADBEB, HPEB...
-             any(len(c) >= 4 and c.endswith("B") and c not in WATCHLIST for c in coins)):
+             sum(len(c) >= 4 and c.endswith("B") and c not in WATCHLIST for c in coins) >= 2):
         return 0, ["acciones tokenizadas"], 0, coins
     known = [c for c in coins if c in WATCHLIST]
     pts += min(len(known), 3) * 2
