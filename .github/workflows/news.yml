@@ -3,6 +3,8 @@ name: Diario Cripto
 on:
   schedule:
     - cron: "*/15 * * * *"   # cada 15 min (GitHub puede retrasarlo unos minutos)
+    - cron: "5 6 * * *"      # edición de la mañana: 08:05 en Alemania en verano (CEST = UTC+2)
+    - cron: "5 7 * * *"      # edición de la mañana: 08:05 en Alemania en invierno (CET = UTC+1)
   workflow_dispatch:          # botón "Run workflow" para lanzarlo a mano
 
 permissions:

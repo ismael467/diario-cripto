@@ -5,6 +5,7 @@ Fuentes (sin API keys):
   - Posts de Trump en Truth Social (espejo RSS de trumpstruth.org)
   - Anuncios de nuevos listings en Binance
   - RSS de medios cripto: CoinDesk, Cointelegraph, The Block, Decrypt, Blockworks
+  - Canales públicos de Telegram (versión web t.me/s/)
 
 Cada noticia recibe:
   - una PUNTUACIÓN (fuente + catalizadores + monedas mencionadas)
@@ -26,9 +27,11 @@ Uso (PowerShell):
   python crypto_news_alert.py --dry        # sin Telegram, alertas por consola
   python crypto_news_alert.py --test       # mensaje de prueba a Telegram y sale
   python crypto_news_alert.py --periodico  # solo regenera periodico.html desde la base de datos
+  python crypto_news_alert.py --repuntuar  # repuntúa las noticias guardadas con las reglas actuales
   python crypto_news_alert.py --once       # una sola pasada y sale (lo que usa GitHub Actions)
 """
 
+import calendar
 import html
 import json
 import os
@@ -57,6 +60,10 @@ BRIEF_MIN = 2              # mínimo para salir como "Breve" en el periódico
 MOVED_1H_PCT = 10          # si la moneda ya se movió ±10% en 1h → "Ya se ha movido"
 MOVED_24H_PCT = 25         # ... o ±25% en 24h
 PERIODICO_HOURS = 48       # cuántas horas de noticias muestra el periódico
+MAX_AGE_HOURS = 48         # noticias publicadas hace más de esto se descartan
+ALERT_MAX_AGE_HOURS = 6    # noticias publicadas hace más de esto no se avisan por Telegram (solo periódico)
+MIN_DEX_LIQUIDITY = 100_000  # ticker desconocido con menos liquidez en DexScreener: se ignora
+NO_HOT_COINS = ("BTC", "ETH")  # siempre tienen muchas noticias: no cuentan como "tema del día"
 TZ = ZoneInfo("Europe/Berlin")          # todo lo que se muestra va en hora de Alemania
 EDICION_HORA = 8                        # edición de la mañana por Telegram (hora de Alemania)
 AGENDA_PATH = os.getenv("AGENDA_PATH", "agenda.json")
@@ -134,9 +141,11 @@ CATALYSTS = [
     (r"\bunlock\b", 1, "token unlock", -1),
 ]
 
-# Palabras que hacen que un post de Trump sea relevante (si no, se ignora)
-TRUMP_CRYPTO_WORDS = r"crypto|bitcoin|btc|coin|token|blockchain|stablecoin|defi|digital asset|" \
-                     r"hyperliquid|solana|ethereum|xrp|world liberty|reserve|sec\b|fed\b|rate|tariff"
+# Palabras que hacen que un post de Trump sea relevante (si no tiene ninguna, se ignora).
+# Si solo tiene palabras macro (aranceles, Fed...) y ninguna cripto, pierde el peso de fuente oficial.
+TRUMP_CRYPTO_WORDS = r"\b(crypto\w*|bitcoin|btc|\w*coins?|tokens?|blockchain|stablecoins?|defi|digital assets?|" \
+                     r"hyperliquid|solana|ethereum|xrp|world liberty)\b"
+TRUMP_MACRO_WORDS = r"\b(reserve|sec|fed|interest rates?|rate cuts?|tariffs?)\b"
 
 # Categoría de cada catalizador (la del catalizador con más peso manda)
 TAG_CAT = {
@@ -159,6 +168,13 @@ TELEGRAM_SOURCES = {name for name, _, _ in TELEGRAM_CHANNELS}
 TOKENIZED_STOCKS_RE = r"tokeni[sz]ed (\S+ ){0,2}stocks?|xstocks|stock tokens?|equit(y|ies)"
 # Flujos diarios/semanales de ETF: dato rutinario, no catalizador
 ETF_FLOWS_RE = r"\bnet (in|out)flows?\b"
+# Compras corporativas para la tesorería ("adds $169M bitcoin", "acquires 334 BTC", "bitcoin treasury company")
+_TREASURY_COINS = r"(bitcoin|btc|ether|eth|ethereum|solana|sol|xrp|bnb|hype|crypto)"
+TREASURY_BUY_RE = (r"\b(adds?|buys|bought|purchases?|purchased|acquires?|acquired)\s+(another\s+|an additional\s+)?"
+                   r"\$?\d[\d,.]*\s?(k|m|b|mn|bn|million|billion)?\s+(worth of\s+|in\s+|of\s+)?" + _TREASURY_COINS + r"\b"
+                   r"|\b" + _TREASURY_COINS + r"\s+treasur(y|ies)\b|\btreasury (company|companies|firm|firms|strategy)\b")
+# "Nasdaq-listed", "NYSE-listed"...: describe a la empresa, no es un listing ni noticia de TradFi
+LISTED_DESCRIPTOR_RE = r"\b[\w.]+-listed\b|\bpublicly (traded and )?listed\b"
 # Rumores y predicciones: se penalizan (regla editorial: hecho ≠ opinión ≠ predicción)
 RUMOR_RE = r"\brumou?rs?\b|\breportedly\b|\bsources say\b|\bunconfirmed\b|\bspeculat"
 PREDICTION_RE = (r"price prediction|price forecast|price analysis|could (reach|hit|soar|explode)|"
@@ -184,6 +200,7 @@ def db():
         id TEXT PRIMARY KEY, ts INTEGER, sym TEXT, label TEXT, score INTEGER, sentiment INTEGER,
         title TEXT, p0 REAL, p24 REAL, p7 REAL)""")
     con.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
+    con.execute("CREATE TABLE IF NOT EXISTS alerts (id TEXT PRIMARY KEY, ts INTEGER, sym TEXT, tags TEXT)")
     return con
 
 
@@ -218,8 +235,27 @@ def start_tracking(con, it):
     if it["label"] == "breve" or not c:
         return
     con.execute("INSERT OR IGNORE INTO track VALUES (?,?,?,?,?,?,?,?,NULL,NULL)",
-                (it["id"], it["ts"], c["sym"], it["label"], it["score"], it["sentiment"],
+                (it["id"], int(time.time()), c["sym"], it["label"], it["score"], it["sentiment"],
                  it["title"], c["price"]))
+
+
+CATALYST_TAGS = {tag for _, _, tag, _ in CATALYSTS}
+
+
+def already_alerted(con, it):
+    """¿Ya se avisó en 24 h de la misma moneda principal con algún catalizador en común?"""
+    cats = CATALYST_TAGS.intersection(it["tags"])
+    if not it["coins"] or not cats:
+        return False
+    rows = con.execute("SELECT tags FROM alerts WHERE sym=? AND ts>=?",
+                       (it["coins"][0]["sym"], int(time.time()) - 86400)).fetchall()
+    return any(cats & set(json.loads(r[0])) for r in rows)
+
+
+def record_alert(con, it):
+    sym = it["coins"][0]["sym"] if it["coins"] else ""
+    con.execute("INSERT OR REPLACE INTO alerts VALUES (?,?,?,?)",
+                (it["id"], int(time.time()), sym, json.dumps(it["tags"], ensure_ascii=False)))
 
 
 def update_tracking(con):
@@ -301,8 +337,10 @@ def fetch_rss():
                 summary = re.sub(r"<[^>]+>", " ", html.unescape(e.get("summary", "")))
                 summary = re.sub(r"\s+", " ", summary).strip()[:600]
                 link = e.get("link", "")
+                when = e.get("published_parsed") or e.get("updated_parsed")
                 items.append({"id": f"{name}|{e.get('id') or link or title}", "source": name,
-                              "title": title, "text": summary, "link": link, "base": base})
+                              "title": title, "text": summary, "link": link, "base": base,
+                              "published": calendar.timegm(when) if when else None})
         except Exception as ex:
             log(f"Error en {name}: {ex}")
     return items
@@ -320,16 +358,16 @@ def fetch_binance_listings():
                 items.append({"id": f"binance|{a.get('code')}", "source": "Binance Listing",
                               "title": a.get("title", ""), "text": "",
                               "link": f"https://www.binance.com/en/support/announcement/{a.get('code')}",
-                              "base": 5})
+                              "base": 5,
+                              "published": a["releaseDate"] // 1000 if a.get("releaseDate") else None})
     except Exception as ex:
         log(f"Error en Binance: {ex}")
     return items
 
 
 def fetch_telegram_channels():
-    """Mensajes de las últimas 48 h de los canales públicos de TELEGRAM_CHANNELS (t.me/s/<usuario>)."""
+    """Mensajes de los canales públicos de TELEGRAM_CHANNELS (t.me/s/<usuario>)."""
     items = []
-    cutoff = datetime.now(TZ) - timedelta(hours=48)
     for name, user, base in TELEGRAM_CHANNELS:
         try:
             r = requests.get(f"https://t.me/s/{user}", headers=UA, timeout=15)
@@ -338,7 +376,7 @@ def fetch_telegram_channels():
                 post = re.search(r'data-post="([^"]+)"', block).group(1)
                 when = re.search(r'<time[^>]*datetime="([^"]+)"', block)
                 body = re.search(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', block, re.S)
-                if not when or not body or datetime.fromisoformat(when.group(1)) < cutoff:
+                if not when or not body:
                     continue
                 text = re.sub(r"<br\s*/?>", "\n", body.group(1))
                 text = html.unescape(re.sub(r"<[^>]+>", "", text))
@@ -347,14 +385,18 @@ def fetch_telegram_channels():
                     continue
                 items.append({"id": post, "source": name, "title": lines[0],
                               "text": " ".join(lines[1:])[:600],
-                              "link": f"https://t.me/{post}", "base": base})
+                              "link": f"https://t.me/{post}", "base": base,
+                              "published": int(datetime.fromisoformat(when.group(1)).timestamp())})
         except Exception as ex:
             log(f"Error en {name} (Telegram): {ex}")
     return items
 
 
 def collect():
-    return fetch_binance_listings() + fetch_rss() + fetch_telegram_channels()
+    """Todas las fuentes, sin las noticias publicadas hace más de MAX_AGE_HOURS."""
+    cutoff = time.time() - MAX_AGE_HOURS * 3600
+    items = fetch_binance_listings() + fetch_rss() + fetch_telegram_channels()
+    return [it for it in items if not it.get("published") or it["published"] >= cutoff]
 
 # ───────────────────────── PUNTUACIÓN ─────────────────────────
 
@@ -376,21 +418,27 @@ def detect_coins(text):
     return found
 
 
-def score(item):
-    """Devuelve (puntos, [etiquetas], sentimiento, [monedas])."""
+def score(item, ignore=()):
+    """Devuelve (puntos, [etiquetas], sentimiento, [monedas]). `ignore`: tickers a no contar."""
     text = f"{item['title']} {item['text']}"
     low = text.lower()
-    if item["source"].startswith("Trump") and not re.search(TRUMP_CRYPTO_WORDS, low):
-        return 0, [], 0, []
-
+    trump = item["source"].startswith("Trump")
     pts, tags, sent = item["base"], [], 0
+    if trump and not re.search(TRUMP_CRYPTO_WORDS, low):
+        if not re.search(TRUMP_MACRO_WORDS, low):
+            return 0, [], 0, []
+        pts = 0   # post solo macro (aranceles, Fed...): sin el peso de fuente oficial
+
+    cat_low = re.sub(LISTED_DESCRIPTOR_RE, " ", low)
     for pattern, p, tag, s in CATALYSTS:
-        if re.search(pattern, low):
+        if re.search(pattern, cat_low):
             pts += p
             tags.append(tag)
             sent += s
 
-    coins = detect_coins(text)
+    coins = [c for c in detect_coins(text) if c not in ignore]
+    if trump:   # en Trump solo cuentan monedas de la watchlist; "(BD)" es una empresa, no una moneda
+        coins = [c for c in coins if c in WATCHLIST]
     # Acciones tokenizadas (ej. "Adds Adobe (ADBEB), Hewlett Packard (HPEB)..."): no son cripto
     if re.search(TOKENIZED_STOCKS_RE, item["title"].lower()) or \
             len(re.findall(r"\(([A-Z]{2,10})\)", item["title"])) >= 4 or \
@@ -398,10 +446,13 @@ def score(item):
              sum(len(c) >= 4 and c.endswith("B") and c not in WATCHLIST for c in coins) >= 2):
         return 0, ["acciones tokenizadas"], 0, coins
     known = [c for c in coins if c in WATCHLIST]
-    pts += min(len(known), 3) * 2
-    pts += min((len(coins) - len(known)) * 2, 2)   # tickers fuera de la watchlist: máx. 2 puntos
+    bonus = min(len(known), 3) * 2
+    bonus += min((len(coins) - len(known)) * 2, 2)   # tickers fuera de la watchlist: máx. 2 puntos
+    if len(coins) >= 4:   # listas de monedas ("cita BTC, ETH, SOL, XLM..."): no es noticia de ninguna
+        bonus = min(bonus, 2)
+    pts += bonus
 
-    if item["source"].startswith("Trump") and coins:
+    if trump and coins:
         pts += 5
         tags.append("Trump menciona proyecto")
         sent += 1
@@ -411,6 +462,9 @@ def score(item):
     if re.search(ETF_FLOWS_RE, low) and "etf" in low:
         pts -= 4
         tags.append("flujos ETF")
+    if re.search(TREASURY_BUY_RE, low):
+        pts -= 4
+        tags.append("compra treasury")
     if re.search(RUMOR_RE, low):
         pts -= 3
         tags.append("rumor")
@@ -418,8 +472,22 @@ def score(item):
 
 # ───────────────────────── PRECIOS ─────────────────────────
 
-def prices(symbols):
+def dex_pair(sym, cache):
+    """Par de DexScreener con más liquidez para este símbolo (None si no hay). `cache`: dict de la pasada."""
+    if sym not in cache:
+        try:
+            pairs = requests.get("https://api.dexscreener.com/latest/dex/search",
+                                 params={"q": sym}, headers=UA, timeout=10).json().get("pairs") or []
+        except Exception:
+            return None
+        pairs = [p for p in pairs if (p.get("baseToken") or {}).get("symbol", "").upper() == sym]
+        cache[sym] = max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0) if pairs else None
+    return cache[sym]
+
+
+def prices(symbols, dex_cache=None):
     """{SYM: {"price", "ch1h", "ch24h"}} — CoinGecko para la watchlist, DexScreener para el resto."""
+    dex_cache = {} if dex_cache is None else dex_cache
     out = {}
     known = [s for s in symbols if s in WATCHLIST]
     if known:
@@ -436,16 +504,10 @@ def prices(symbols):
         except Exception as ex:
             log(f"Error CoinGecko: {ex}")
     for s in [s for s in symbols if s not in WATCHLIST][:10]:
-        try:
-            pairs = requests.get("https://api.dexscreener.com/latest/dex/search",
-                                 params={"q": s}, headers=UA, timeout=10).json().get("pairs") or []
-            pairs = [p for p in pairs if (p.get("baseToken") or {}).get("symbol", "").upper() == s]
-            if pairs:
-                p = max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0)
-                pc = p.get("priceChange") or {}
-                out[s] = {"price": float(p.get("priceUsd") or 0), "ch1h": pc.get("h1"), "ch24h": pc.get("h24")}
-        except Exception:
-            pass
+        p = dex_pair(s, dex_cache)
+        if p:
+            pc = p.get("priceChange") or {}
+            out[s] = {"price": float(p.get("priceUsd") or 0), "ch1h": pc.get("h1"), "ch24h": pc.get("h24")}
     return out
 
 
@@ -464,33 +526,49 @@ def label_for(pts, coins_px, check_moved=True):
     return "breve"
 
 
-def coverage_24h(con, sym):
-    """Cuántas noticias de las últimas 24 h ya mencionaban esta moneda (para detectar 'tema del día')."""
+def coverage_24h(con, sym, ts=None, exclude_id=""):
+    """Cuántas noticias de las 24 h anteriores a `ts` mencionaban esta moneda (para detectar 'tema del día')."""
     if con is None:
         return 0
-    since = int(time.time()) - 86400
-    return con.execute("SELECT COUNT(*) FROM news WHERE ts>=? AND coins LIKE ?",
-                       (since, f'%"sym": "{sym}"%')).fetchone()[0]
+    ts = ts or int(time.time())
+    return con.execute("SELECT COUNT(*) FROM news WHERE ts BETWEEN ? AND ? AND coins LIKE ? AND id != ?",
+                       (ts - 86400, ts, f'%"sym": "{sym}"%', exclude_id)).fetchone()[0]
+
+
+def illiquid_tickers(raw_items, dex_cache):
+    """Tickers desconocidos cuyo mejor par en DexScreener tiene menos de MIN_DEX_LIQUIDITY."""
+    unknown = sorted({c for it in raw_items if not it["source"].startswith("Trump")
+                      for c in detect_coins(f"{it['title']} {it['text']}") if c not in WATCHLIST})
+    out = set()
+    for s in unknown[:25]:
+        p = dex_pair(s, dex_cache)
+        if p and ((p.get("liquidity") or {}).get("usd") or 0) < MIN_DEX_LIQUIDITY:
+            out.add(s)
+    return out
 
 
 def process(raw_items, check_moved=True, con=None):
     """Puntúa, busca precios (en bloque) y etiqueta. Devuelve solo lo que llega a 'Breve'."""
+    now = int(time.time())
+    dex_cache = {}
+    ignore = illiquid_tickers(raw_items, dex_cache)
     scored = []
     for it in raw_items:
-        pts, tags, sent, coins = score(it)
-        # Tema del día: si una moneda acumula noticias, la narrativa está creciendo
-        hot = max((coverage_24h(con, c) for c in coins), default=0)
+        ts = min(it.get("published") or now, now)   # fecha real de publicación
+        pts, tags, sent, coins = score(it, ignore)
+        # Tema del día: si una moneda acumula noticias, la narrativa está creciendo (BTC/ETH siempre las tienen)
+        hot = max((coverage_24h(con, c, ts, it["id"]) for c in coins if c not in NO_HOT_COINS), default=0)
         if hot >= 2 and "flujos ETF" not in tags:   # los flujos de ETF no son tema del día
             pts += 3
             tags.append(f"tema del día ({hot + 1} noticias en 24 h)")
         if pts >= BRIEF_MIN:
-            scored.append((it, pts, tags, sent, coins, hot))
-    wanted = sorted({c for (_, pts, _, _, coins, _) in scored if pts >= ALERT_THRESHOLD for c in coins})
-    px = prices(wanted) if wanted else {}
+            scored.append((it, ts, pts, tags, sent, coins, hot))
+    wanted = sorted({c for (_, _, pts, _, _, coins, _) in scored if pts >= ALERT_THRESHOLD for c in coins})
+    px = prices(wanted, dex_cache) if wanted else {}
     out = []
-    for it, pts, tags, sent, coins, hot in scored:
+    for it, ts, pts, tags, sent, coins, hot in scored:
         cpx = [{"sym": c, **px.get(c, {})} for c in coins[:5]]
-        out.append({**it, "ts": int(time.time()), "score": pts, "tags": tags, "sentiment": sent,
+        out.append({**it, "ts": ts, "score": pts, "tags": tags, "sentiment": sent,
                     "coins": cpx, "hot": hot, "label": label_for(pts, cpx, check_moved)})
     return out
 
@@ -515,8 +593,9 @@ def format_msg(it):
     lines = [f"{emo} <b>{name}</b>  ·  score {it['score']}  ·  {esc(it['source'])}",
              f"<i>{category(it)}</i>" + (f"  ·  {vtxt}" if vtxt else ""),
              "", f"<b>{esc(it['title'][:300])}</b>"]
-    if it["source"].startswith("Trump") and it["text"]:
-        lines.append(esc(it["text"][:400]))
+    body = body_without_title(it)
+    if it["source"].startswith("Trump") and body:
+        lines.append(esc(body[:400]))
     if it["tags"]:
         sent = "🟢 alcista" if it["sentiment"] > 0 else "🔴 bajista" if it["sentiment"] < 0 else "⚪ neutro"
         lines.append(f"\n{sent} · " + " · ".join(esc(t) for t in it["tags"]))
@@ -536,15 +615,21 @@ def format_msg(it):
 
 
 def send(msg, dry=False):
+    """Manda el mensaje a Telegram. Devuelve True solo si Telegram lo aceptó."""
     if dry:
         print("\n" + html.unescape(re.sub(r"<[^>]+>", "", msg)) + "\n" + "─" * 50)
-        return
+        return True
     try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                      data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML",
-                            "disable_web_page_preview": "true"}, timeout=15)
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                          data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML",
+                                "disable_web_page_preview": "true"}, timeout=15)
+        data = r.json()
+        if r.ok and data.get("ok"):
+            return True
+        log(f"Error de Telegram ({r.status_code}): {data.get('description', '')}")
     except Exception as ex:
-        log(f"Error enviando a Telegram: {ex}")
+        log(f"Error enviando a Telegram: {type(ex).__name__}")
+    return False
 
 # ───────────────────────── PERIÓDICO HTML ─────────────────────────
 
@@ -596,12 +681,26 @@ def title_html(it, tag="h3"):
     return f"<{tag}>{t}</{tag}>"
 
 
+def body_without_title(it):
+    """Texto sin el título repetido al principio (Truth Social repite el post en título y texto,
+    a veces con espacios distintos: "U.S.!Beckton" / "U.S.! Beckton")."""
+    text, title = it["text"].strip(), re.sub(r"\s+", "", it["title"]).rstrip("….")
+    i = j = 0
+    while i < len(text) and j < len(title):
+        if text[i].isspace():
+            i += 1
+        elif text[i] == title[j]:
+            i += 1
+            j += 1
+        else:
+            return text          # no empieza por el título
+    return text[i:].strip()      # si el texto entero era el título, queda vacío
+
+
 def article(it, big=False):
     emo, name = LABELS[it["label"]]
     body = ""
-    text = it["text"].strip()
-    if text.startswith(it["title"].strip()):          # Truth Social repite el título en el texto
-        text = text[len(it["title"].strip()):].strip()
+    text = body_without_title(it)
     if text and (big or it["source"].startswith("Trump")):
         body = f'<p class="lede">{html.escape(text[:420 if big else 220])}</p>'
     return (f'<article class="{it["label"]}{" big" if big else ""}">'
@@ -777,10 +876,9 @@ def morning_edition(con, dry):
     else:
         lines.append("\n📰 Noche tranquila: ninguna noticia destacada en 24 h.")
 
-    if len(lines) > 1:
-        send("\n".join(lines), dry)
+    if send("\n".join(lines), dry):   # si Telegram falla, se reintenta en la siguiente pasada
         log("Edición de la mañana enviada.")
-    meta_set(con, "edicion", key)
+        meta_set(con, "edicion", key)
 
 
 PERIODICO_TEMPLATE = """<!DOCTYPE html>
@@ -897,14 +995,21 @@ def cycle(con, dry, first=False):
             new.append(it)
     # En el primer arranque las noticias son viejas: van al periódico pero sin Telegram
     # y sin la etiqueta "ya se ha movido" (el precio actual no dice nada de ellas).
+    # Las publicadas hace más de ALERT_MAX_AGE_HOURS tampoco se avisan: llegan tarde.
     for it in process(new, check_moved=not first, con=con):
         save_news(con, it)
         it["verif"] = verification(con, it)
-        if not first:
-            start_tracking(con, it)
-        if not first and it["label"] in TELEGRAM_LABELS:
-            send(format_msg(it), dry)
-            log(f"{LABELS[it['label']][1]} ({it['score']}) {it['source']}: {it['title'][:80]}")
+        if first or it["ts"] < time.time() - ALERT_MAX_AGE_HOURS * 3600:
+            continue
+        start_tracking(con, it)
+        if it["label"] not in TELEGRAM_LABELS:
+            continue
+        msg = f"{LABELS[it['label']][1]} ({it['score']}) {it['source']}: {it['title'][:80]}"
+        if already_alerted(con, it):
+            log(f"Repetida, solo periódico: {msg}")
+        elif send(format_msg(it), dry):
+            record_alert(con, it)
+            log(msg)
     con.commit()
     update_tracking(con)
     if not first:
@@ -913,12 +1018,35 @@ def cycle(con, dry, first=False):
     return len(new)
 
 
+def rescore(con):
+    """Vuelve a puntuar las noticias guardadas con las reglas actuales (sin avisar por Telegram).
+    Las que bajan de BRIEF_MIN salen del periódico; las 'ya se ha movido' lo siguen siendo."""
+    bases = {"Binance Listing": 5, **{n: b for n, _, b in RSS_FEEDS}, **{n: b for n, _, b in TELEGRAM_CHANNELS}}
+    old = {n["id"]: n for n in load_news(con, 24 * 365)}
+    items = [{"id": n["id"], "source": n["source"], "title": n["title"], "text": n["text"],
+              "link": n["link"], "base": bases.get(n["source"], 0), "published": n["ts"]} for n in old.values()]
+    out = process(items, check_moved=False, con=con)
+    for it in out:
+        if old[it["id"]]["label"] == "movido" and it["score"] >= ALERT_THRESHOLD:
+            it["label"] = "movido"
+        save_news(con, it)
+    kept = {it["id"] for it in out}
+    con.executemany("DELETE FROM news WHERE id=?", [(i,) for i in old if i not in kept])
+    con.commit()
+    return len(old), len(out)
+
+
 def main():
     dry = "--dry" in sys.argv
     if "--test" in sys.argv:
         send("✅ crypto_news_alert conectado correctamente.", dry)
         return
     con = db()
+    if "--repuntuar" in sys.argv:
+        total, kept = rescore(con)
+        build_periodico(con)
+        print(f"Repuntuadas {total} noticias ({kept} siguen en el periódico). Periódico regenerado.")
+        return
     if "--periodico" in sys.argv:
         build_periodico(con)
         print(f"Periódico regenerado: {os.path.abspath(PERIODICO_PATH)}")
