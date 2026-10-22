@@ -63,7 +63,7 @@ PERIODICO_HOURS = 48       # cuántas horas de noticias muestra el periódico
 MAX_AGE_HOURS = 48         # noticias publicadas hace más de esto se descartan
 ALERT_MAX_AGE_HOURS = 6    # noticias publicadas hace más de esto no se avisan por Telegram (solo periódico)
 MIN_DEX_LIQUIDITY = 100_000  # ticker desconocido con menos liquidez en DexScreener: se ignora
-NO_HOT_COINS = ("BTC", "ETH")  # siempre tienen muchas noticias: no cuentan como "tema del día"
+NO_HOT_COINS = ("BTC", "ETH", "USDC", "USDT")  # siempre tienen muchas noticias: no cuentan como "tema del día"
 TZ = ZoneInfo("Europe/Berlin")          # todo lo que se muestra va en hora de Alemania
 EDICION_HORA = 8                        # edición de la mañana por Telegram (hora de Alemania)
 AGENDA_PATH = os.getenv("AGENDA_PATH", "agenda.json")
@@ -115,7 +115,32 @@ WATCHLIST = {
     "HBAR": ("hedera-hashgraph", ["hedera", "hbar"]),
     "XLM":  ("stellar", ["stellar", "xlm"]),
     "ALGO": ("algorand", ["algorand"]),
+    # Stablecoins: cuentan como moneda mencionada, pero el aviso no lleva precio (siempre ~1 $)
+    "USDC": ("usd-coin", ["usdc", "circle"]),
+    "USDT": ("tether", ["tether", "usdt"]),
 }
+STABLECOINS = ("USDC", "USDT")
+# "XYZ/USDT", "USDT pairs", "USDT-M"...: es el par de cotización, no una noticia de la stablecoin
+STABLE_PAIR_RE = (r"[a-z0-9]+ ?/ ?(usdt|usdc)\b|[a-z0-9]{2,}(usdt|usdc)\b|"
+                  r"\b(usdt|usdc)((\s*,\s*|\s+(and|&|or)\s+)[a-z0-9]+)*[- ]?(trading )?"
+                  r"(pairs?|markets?|perps?|perpetuals?|m\b|margined|spot|quoted)|"
+                  r"\bagainst\b[a-z0-9 ,&]{0,30}\b(usdt|usdc)\b")
+
+# Regulación clave (+5): normas definitivas, leyes aprobadas y los organismos/personas que las sacan.
+# Solo se busca en el TITULAR (muchos artículos citan "GENIUS Act" de pasada en el texto).
+# "Treasury" solo cuando es claramente el Tesoro de EE. UU. (no "bitcoin treasury", "digital asset treasury"...)
+_US_TREASURY = (r"\b(u\.?s\.? |us )treasury\b|\btreasury (secretary|department|dept\.?|official|guidance)|"
+                r"\bthe treasury\b(?! (compan|firm|strateg))|\btreasury['’]s\b|"
+                r"\btreasury (says|said|issues?|issued|proposes?|proposed|releases?|released|finali[sz]es?|seeks?)\b")
+_DECISIVE_REG = (r"\bfinal rules?\b|\bfinali[sz](e|es|ed|ing)\b.{0,40}\brul(e|es|ing)\b|\bsign(s|ed)?\b.{0,40}\binto law\b|"
+                 r"\bpass(es|ed)?( the)? (senate|house)\b|\b(senate|house) pass(es|ed)\b")
+KEY_REG_RE = (_DECISIVE_REG + r"|\bgenius act\b|\bclarity act\b|\bmarket structure (bill|legislation|law)\b|"
+              r"\bocc\b|\bcomptroller\b|\bbessent\b|\bstablecoin rules?\b|" + _US_TREASURY)
+# Leyes / organismos con nombre: para no repetir el aviso del mismo tema el mismo día cuando no hay moneda
+REG_TOPICS = {"GENIUS": r"\bgenius\b", "CLARITY": r"\bclarity act\b", "MARKET STRUCTURE": r"\bmarket structure\b",
+              "OCC": r"\bocc\b|\bcomptroller\b"}
+# Acciones que reaccionan a la regulación cripto/stablecoins (línea extra en los 🔥 de regulación)
+RELATED_STOCKS = ["CRCL", "COIN", "MSTR", "HOOD"]
 
 # Catalizadores: (regex, puntos, etiqueta, sentido) sentido: +1 alcista, -1 bajista, 0 neutro
 CATALYSTS = [
@@ -133,6 +158,8 @@ CATALYSTS = [
     (r"\bacquir(e|es|ed)\b|\bacquisition\b", 2, "adquisición", 1),
     (r"\bairdrop\b|\btoken launch\b|\btge\b", 2, "airdrop / TGE", 1),
     (r"\bmainnet\b|\bupgrade\b", 1, "upgrade", 1),
+    (KEY_REG_RE, 5, "regulación clave", 0),
+    (_DECISIVE_REG, 3, "norma definitiva", 0),   # extra si es un paso firme: final rule, ley firmada o aprobada
     (r"\bsec\b|\bcftc\b|\batkins\b", 2, "regulador", 0),
     (r"\bexecutive order\b|\bsenate\b|\bcongress\b|\bclarity act\b|\bgenius act\b", 2, "política / ley", 0),
     (r"\bhack(ed)?\b|\bexploit(ed)?\b|\bdrain(ed)?\b|\bstolen\b", 4, "hack / exploit", -1),
@@ -154,7 +181,8 @@ TAG_CAT = {
     "bancos / TradFi": "Institucional", "elegido / gana contrato": "Adopción",
     "tokenización / RWA": "Adopción", "partnership": "Adopción", "adquisición": "Adopción",
     "listing": "Exchange", "delisting": "Exchange", "aprobación": "Regulación",
-    "regulador": "Regulación", "política / ley": "Regulación", "reserva estratégica": "Regulación",
+    "regulador": "Regulación", "política / ley": "Regulación", "regulación clave": "Regulación",
+    "norma definitiva": "Regulación", "reserva estratégica": "Regulación",
     "hack / exploit": "Seguridad", "demanda": "Regulación", "upgrade": "Tecnología",
     "Trump menciona proyecto": "Política",
 }
@@ -240,20 +268,32 @@ def start_tracking(con, it):
 
 
 CATALYST_TAGS = {tag for _, _, tag, _ in CATALYSTS}
+TITLE_ONLY_TAGS = {"regulación clave", "norma definitiva"}   # solo cuentan si están en el titular
+
+
+def alert_key(it):
+    """Moneda principal; si no hay moneda y es regulación clave, el tema (#GENIUS, #OCC...)."""
+    if it["coins"]:
+        return it["coins"][0]["sym"]
+    if "regulación clave" in it["tags"]:
+        low = f"{it['title']} {it['text']}".lower()
+        return "#" + next((k for k, rx in REG_TOPICS.items() if re.search(rx, low)), "REG")
+    return ""
 
 
 def already_alerted(con, it):
-    """¿Ya se avisó en 24 h de la misma moneda principal con algún catalizador en común?"""
+    """¿Ya se avisó en 24 h de la misma moneda principal (o ley) con algún catalizador en común?"""
     cats = CATALYST_TAGS.intersection(it["tags"])
-    if not it["coins"] or not cats:
+    key = alert_key(it)
+    if not key or not cats:
         return False
     rows = con.execute("SELECT tags FROM alerts WHERE sym=? AND ts>=?",
-                       (it["coins"][0]["sym"], int(time.time()) - 86400)).fetchall()
+                       (key, int(time.time()) - 86400)).fetchall()
     return any(cats & set(json.loads(r[0])) for r in rows)
 
 
 def record_alert(con, it):
-    sym = it["coins"][0]["sym"] if it["coins"] else ""
+    sym = alert_key(it)
     con.execute("INSERT OR REPLACE INTO alerts VALUES (?,?,?,?)",
                 (it["id"], int(time.time()), sym, json.dumps(it["tags"], ensure_ascii=False)))
 
@@ -401,7 +441,7 @@ def collect():
 # ───────────────────────── PUNTUACIÓN ─────────────────────────
 
 def detect_coins(text):
-    t = " " + text.lower() + " "
+    t = " " + re.sub(STABLE_PAIR_RE, " ", text.lower()) + " "
     found = []
     for sym, (_, aliases) in WATCHLIST.items():
         for a in aliases:
@@ -413,9 +453,12 @@ def detect_coins(text):
         s = m[0] or m[1]
         if s not in found and s not in ("USD", "SEC", "ETF", "CEO", "US", "EU", "UK", "ICE", "ET",
                                         "EST", "UTC", "GMT", "CET", "NYSE", "CME", "FED", "FOMC",
-                                        "CPI", "GDP", "IPO", "AI"):
+                                        "CPI", "GDP", "IPO", "AI", "OCC", "FDIC", "ABA", "OFAC",
+                                        "CRCL", "COIN", "MSTR", "HOOD") \
+                and not (s in STABLECOINS and s.lower() not in t):
             found.append(s)
-    return found
+    # Las stablecoins van al final: la moneda principal (precio, repetidos) debe ser la otra si la hay
+    return [c for c in found if c not in STABLECOINS] + [c for c in found if c in STABLECOINS]
 
 
 def score(item, ignore=()):
@@ -430,8 +473,9 @@ def score(item, ignore=()):
         pts = 0   # post solo macro (aranceles, Fed...): sin el peso de fuente oficial
 
     cat_low = re.sub(LISTED_DESCRIPTOR_RE, " ", low)
+    title_low = item["title"].lower()
     for pattern, p, tag, s in CATALYSTS:
-        if re.search(pattern, cat_low):
+        if re.search(pattern, title_low if tag in TITLE_ONLY_TAGS else cat_low):
             pts += p
             tags.append(tag)
             sent += s
@@ -489,7 +533,7 @@ def prices(symbols, dex_cache=None):
     """{SYM: {"price", "ch1h", "ch24h"}} — CoinGecko para la watchlist, DexScreener para el resto."""
     dex_cache = {} if dex_cache is None else dex_cache
     out = {}
-    known = [s for s in symbols if s in WATCHLIST]
+    known = [s for s in symbols if s in WATCHLIST and s not in STABLECOINS]   # stablecoins: sin precio
     if known:
         ids = {WATCHLIST[s][0]: s for s in known}
         try:
@@ -578,6 +622,46 @@ def fmt_pct(v):
     return "–" if v is None else f"{v:+.1f}%"
 
 
+def coin_txt(c):
+    """Texto de una moneda en el aviso: las stablecoins van sin precio."""
+    if c["sym"] in STABLECOINS:
+        return f"<b>{c['sym']}</b> (stablecoin)"
+    return f"<b>{c['sym']}</b> {fmt_price(c.get('price'))} (1h {fmt_pct(c.get('ch1h'))} · 24h {fmt_pct(c.get('ch24h'))})"
+
+
+def stock_quotes(symbols):
+    """{SYM: (precio, cambio % del día)} desde Yahoo Finance (sin clave). Lo que falle se omite."""
+    out = {}
+    for s in symbols:
+        for host in ("query1", "query2"):
+            try:
+                r = requests.get(f"https://{host}.finance.yahoo.com/v8/finance/chart/{s}",
+                                 params={"range": "1d", "interval": "1d"},
+                                 headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+                m = r.json()["chart"]["result"][0]["meta"]
+                p = m.get("regularMarketPrice")
+                ch = m.get("regularMarketChangePercent")
+                prev = m.get("chartPreviousClose") or m.get("previousClose")
+                if ch is None and p and prev:
+                    ch = (p / prev - 1) * 100
+                if p:
+                    out[s] = (p, ch)
+                    break
+            except Exception:
+                continue
+    return out
+
+
+def related_stocks_line(symbols=RELATED_STOCKS):
+    """'Acciones relacionadas: CRCL $86.32 (-3.8%) · ...'. Si Yahoo falla, solo los tickers."""
+    try:
+        q = stock_quotes(symbols)
+    except Exception:
+        q = {}
+    parts = [f"<b>{s}</b> {fmt_price(q[s][0])} ({fmt_pct(q[s][1])})" if s in q else f"<b>{s}</b>" for s in symbols]
+    return "🏛 Acciones relacionadas: " + " · ".join(parts)
+
+
 def fmt_price(v):
     if not v:
         return "–"
@@ -600,9 +684,9 @@ def format_msg(it):
         sent = "🟢 alcista" if it["sentiment"] > 0 else "🔴 bajista" if it["sentiment"] < 0 else "⚪ neutro"
         lines.append(f"\n{sent} · " + " · ".join(esc(t) for t in it["tags"]))
     if it["coins"]:
-        parts = [f"<b>{c['sym']}</b> {fmt_price(c.get('price'))} (1h {fmt_pct(c.get('ch1h'))} · 24h {fmt_pct(c.get('ch24h'))})"
-                 for c in it["coins"]]
-        lines.append("💰 " + "\n💰 ".join(parts))
+        lines.append("💰 " + "\n💰 ".join(coin_txt(c) for c in it["coins"]))
+    if it["label"] == "seguir" and category(it) == "Regulación":
+        lines.append(related_stocks_line())
     if it["label"] == "movido":
         if it.get("hot", 0) >= 2:
             lines.append("\n⚠️ <i>El precio ya ha reaccionado, pero la noticia sigue creciendo: "
@@ -654,6 +738,9 @@ def coins_html(coins):
         return ""
     chips = []
     for c in coins:
+        if c["sym"] in STABLECOINS:
+            chips.append(f'<span class="coin"><b>{html.escape(c["sym"])}</b> <small>stablecoin</small></span>')
+            continue
         ch = c.get("ch1h")
         cls = "up" if (ch or 0) > 0 else "down" if (ch or 0) < 0 else ""
         chips.append(f'<span class="coin {cls}"><b>{html.escape(c["sym"])}</b> '
