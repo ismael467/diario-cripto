@@ -136,9 +136,14 @@ _DECISIVE_REG = (r"\bfinal rules?\b|\bfinali[sz](e|es|ed|ing)\b.{0,40}\brul(e|es
                  r"\bpass(es|ed)?( the)? (senate|house)\b|\b(senate|house) pass(es|ed)\b")
 KEY_REG_RE = (_DECISIVE_REG + r"|\bgenius act\b|\bclarity act\b|\bmarket structure (bill|legislation|law)\b|"
               r"\bocc\b|\bcomptroller\b|\bbessent\b|\bstablecoin rules?\b|" + _US_TREASURY)
-# Leyes / organismos con nombre: para no repetir el aviso del mismo tema el mismo día cuando no hay moneda
-REG_TOPICS = {"GENIUS": r"\bgenius\b", "CLARITY": r"\bclarity act\b", "MARKET STRUCTURE": r"\bmarket structure\b",
-              "OCC": r"\bocc\b|\bcomptroller\b"}
+# Misma historia sin moneda: comparten uno de estos catalizadores + STORY_MIN_WORDS palabras clave del título
+STRONG_CATALYSTS = {"regulación clave", "hack / exploit", "listing"}
+STORY_MIN_WORDS = 2
+# Palabras que no identifican una historia (artículos, verbos genéricos, "act", "crypto"...)
+STORY_STOPWORDS = set("""a an the and or but of to in on for with by at from as is are was were be been its it this that
+these those his her their our your new says said say after over into about amid ahead than more most up out not no yes
+will would could should can may might has have had how why what when who which week weekly daily today report reports
+act us u s crypto cryptocurrency cryptocurrencies market markets news first top latest just now via vs amp""".split())
 # Acciones que reaccionan a la regulación cripto/stablecoins (línea extra en los 🔥 de regulación)
 RELATED_STOCKS = ["CRCL", "COIN", "MSTR", "HOOD"]
 
@@ -271,29 +276,61 @@ CATALYST_TAGS = {tag for _, _, tag, _ in CATALYSTS}
 TITLE_ONLY_TAGS = {"regulación clave", "norma definitiva"}   # solo cuentan si están en el titular
 
 
-def alert_key(it):
-    """Moneda principal; si no hay moneda y es regulación clave, el tema (#GENIUS, #OCC...)."""
-    if it["coins"]:
-        return it["coins"][0]["sym"]
-    if "regulación clave" in it["tags"]:
-        low = f"{it['title']} {it['text']}".lower()
-        return "#" + next((k for k, rx in REG_TOPICS.items() if re.search(rx, low)), "REG")
-    return ""
+def main_coin(it):
+    c = it["coins"][0] if it["coins"] else None
+    return (c["sym"] if isinstance(c, dict) else c) or ""
+
+
+def title_words(title):
+    """Palabras clave del título: sin artículos ni palabras genéricas; plural/3ª persona -> singular
+    ("rules" = "rule", "OCC's" = "occ", "stablecoins" = "stablecoin")."""
+    t = re.sub(r"['’]s\b", "", title.lower())
+    out = set()
+    for w in re.findall(r"[a-z0-9$]+", t):
+        if len(w) > 4 and w.endswith("s") and not w.endswith("ss"):
+            w = w[:-1]
+        if len(w) >= 3 and w not in STORY_STOPWORDS:
+            out.add(w)
+    return out
+
+
+def same_story(a, b):
+    """¿Dos noticias cuentan la misma historia?
+    - Misma moneda principal: algún catalizador en común + STORY_MIN_WORDS palabras clave del título.
+    - Si alguna no tiene moneda: un catalizador fuerte en común (regulación clave, hack, listing) + lo mismo."""
+    ca, cb = main_coin(a), main_coin(b)
+    shared = CATALYST_TAGS.intersection(a["tags"], b["tags"])
+    common = title_words(a["title"]) & title_words(b["title"])
+    if ca and cb:
+        if ca != cb or not shared:
+            return False
+        # el nombre de la moneda ya coincide por definición: no cuenta como palabra en común
+        common -= {ca.lower(), *(w for al in WATCHLIST.get(ca, ("", []))[1] for w in title_words(al))}
+    elif not (shared & STRONG_CATALYSTS):
+        return False
+    return len(common) >= STORY_MIN_WORDS
 
 
 def already_alerted(con, it):
-    """¿Ya se avisó en 24 h de la misma moneda principal (o ley) con algún catalizador en común?"""
+    """¿Ya se avisó en 24 h de esta historia?
+    Con moneda: misma moneda principal y algún catalizador en común.
+    Sin moneda: misma historia (catalizador fuerte + 2 palabras clave del título en común)."""
     cats = CATALYST_TAGS.intersection(it["tags"])
-    key = alert_key(it)
-    if not key or not cats:
+    if not cats:
         return False
-    rows = con.execute("SELECT tags FROM alerts WHERE sym=? AND ts>=?",
-                       (key, int(time.time()) - 86400)).fetchall()
-    return any(cats & set(json.loads(r[0])) for r in rows)
+    since = int(time.time()) - 86400
+    sym = main_coin(it)
+    if sym:
+        rows = con.execute("SELECT tags FROM alerts WHERE sym=? AND ts>=?", (sym, since)).fetchall()
+        return any(cats & set(json.loads(r[0])) for r in rows)
+    rows = con.execute("""SELECT a.tags, n.title, n.coins FROM alerts a JOIN news n ON n.id = a.id
+                          WHERE a.ts>=? AND a.id != ?""", (since, it["id"])).fetchall()
+    return any(same_story(it, {"tags": json.loads(t), "title": title, "coins": json.loads(coins)})
+               for t, title, coins in rows)
 
 
 def record_alert(con, it):
-    sym = alert_key(it)
+    sym = main_coin(it)
     con.execute("INSERT OR REPLACE INTO alerts VALUES (?,?,?,?)",
                 (it["id"], int(time.time()), sym, json.dumps(it["tags"], ensure_ascii=False)))
 
@@ -792,7 +829,35 @@ def article(it, big=False):
         body = f'<p class="lede">{html.escape(text[:420 if big else 220])}</p>'
     return (f'<article class="{it["label"]}{" big" if big else ""}">'
             f'<div class="kicker">{emo} {name}</div><span class="cat">{html.escape(category(it))}</span>{title_html(it, "h2" if big else "h3")}'
-            f'{meta_html(it)}{body}{coins_html(it["coins"])}</article>')
+            f'{meta_html(it)}{body}{coins_html(it["coins"])}{more_html(it)}</article>')
+
+
+def group_stories(news):
+    """Agrupa las noticias de la misma historia (same_story, ±24 h). Devuelve solo la de más puntuación
+    de cada historia, con las demás en n["more"] (de la más reciente a la más antigua)."""
+    leaders = []
+    for n in sorted(news, key=lambda n: (-n["score"], n["ts"])):
+        g = next((l for l in leaders
+                  if any(abs(n["ts"] - m["ts"]) <= 86400 and same_story(n, m) for m in [l] + l["more"])), None)
+        if g:
+            g["more"].append(n)
+        else:
+            n["more"] = []
+            leaders.append(n)
+    for l in leaders:
+        l["more"].sort(key=lambda n: -n["ts"])
+    return leaders
+
+
+def more_html(it, limit=8):
+    more = it.get("more") or []
+    if not more:
+        return ""
+    lis = "".join(f'<li>{title_html(n, "span")} <small>{html.escape(n["source"])} · {hace(n["ts"])}</small></li>'
+                  for n in more[:limit])
+    extra = f'<li><small>… y {len(more) - limit} más</small></li>' if len(more) > limit else ""
+    word = "noticia más" if len(more) == 1 else "noticias más"
+    return f'<div class="more"><span>y {len(more)} {word} sobre esto</span><ul>{lis}{extra}</ul></div>'
 
 
 def marcador_html(con):
@@ -844,6 +909,7 @@ def build_periodico(con):
     news = load_news(con, PERIODICO_HOURS)
     for n in news:
         n["verif"] = verification(con, n)
+    news = group_stories(news)   # una entrada por historia; el resto, debajo como "y N noticias más"
     by = {k: [n for n in news if n["label"] == k] for k in LABELS}
     for k in ("seguir", "ojo", "movido"):
         by[k].sort(key=lambda n: (-n["score"], -n["ts"]))
@@ -859,7 +925,8 @@ def build_periodico(con):
 
     breves = "".join(
         f'<li><span class="score s">{n["score"]}</span>{title_html(n, "span")}'
-        f' <small>{html.escape(n["source"])} · {hace(n["ts"])}</small></li>'
+        f' <small>{html.escape(n["source"])} · {hace(n["ts"])}'
+        + (f' · y {len(n["more"])} más sobre esto' if n["more"] else "") + '</small></li>'
         for n in by["breve"][:30]) or '<li class="empty">Sin breves.</li>'
 
     now_dt = datetime.now(TZ)
@@ -952,14 +1019,16 @@ def morning_edition(con, dry):
         for e in t3:
             lines.append(f"🟡 En 3 días ({e['when'].day}/{e['when'].month}) · {html.escape(e['evento'])}")
 
-    news = [n for n in load_news(con, 24) if n["label"] in ("seguir", "ojo")]
+    news = [n for n in group_stories(load_news(con, 24)) if n["label"] in ("seguir", "ojo")]
     news.sort(key=lambda n: (n["label"] == "seguir", n["score"]), reverse=True)
     if news:
         lines.append("\n📰 <b>Lo más importante de las últimas 24 h</b>")
         for n in news[:5]:
             emo = LABELS[n["label"]][0]
             t = html.escape(n["title"][:110])
-            lines.append(f'{emo} <a href="{html.escape(n["link"])}">{t}</a> ({n["score"]})' if n["link"] else f"{emo} {t} ({n['score']})")
+            more = f" · +{len(n['more'])} más" if n["more"] else ""
+            lines.append(f'{emo} <a href="{html.escape(n["link"])}">{t}</a> ({n["score"]}{more})' if n["link"]
+                         else f"{emo} {t} ({n['score']}{more})")
     else:
         lines.append("\n📰 Noche tranquila: ninguna noticia destacada en 24 h.")
 
@@ -1051,6 +1120,10 @@ h3{{font:700 20px/1.2 "Playfair Display",serif;margin:8px 0 6px}}
 .cat{{font:600 11px "IBM Plex Mono",monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-left:8px}}
 .verif{{font:600 11px "IBM Plex Mono",monospace;padding:0 5px;border-radius:2px}}
 .verif.ok{{color:var(--up)}} .verif.no{{color:var(--eye);background:var(--eye-bg)}}
+.more{{margin-top:8px;padding-left:10px;border-left:2px solid var(--soft);font-size:14px}}
+.more>span{{font:600 11px "IBM Plex Mono",monospace;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}}
+.more ul{{list-style:none;margin:4px 0 0;padding:0}} .more li{{margin:2px 0;line-height:1.35}}
+.more small{{color:var(--muted);font-family:"IBM Plex Mono",monospace;font-size:11px}}
 footer{{margin-top:24px;font:11px "IBM Plex Mono",monospace;color:var(--muted);text-align:center}}
 @media (max-width:900px){{.grid{{grid-template-columns:1fr}}.col{{border-right:0;padding:14px 0;border-bottom:1px solid var(--rule)}}
   .breves ul{{columns:1}}}}
