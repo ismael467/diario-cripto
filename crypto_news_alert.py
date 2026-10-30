@@ -5,7 +5,10 @@ Fuentes (sin API keys):
   - Posts de Trump en Truth Social (espejo RSS de trumpstruth.org)
   - Anuncios de nuevos listings en Binance
   - RSS de medios cripto: CoinDesk, Cointelegraph, The Block, Decrypt, Blockworks
-  - Canales públicos de Telegram (versión web t.me/s/)
+  - Canales públicos de Telegram (versión web t.me/s/): Wu Blockchain, Watcher Guru
+  - Casa Blanca y SEC (RSS oficiales; solo cuentan si hablan de cripto)
+  - Google News: '"<político/famoso>" crypto when:1d', una búsqueda por persona y hora como mucho
+  - Congreso: operaciones cripto declaradas (STOCK Act, Cámara), una vez al día
 
 Cada noticia recibe:
   - una PUNTUACIÓN (fuente + catalizadores + monedas mencionadas)
@@ -81,19 +84,30 @@ RSS_FEEDS = [
     ("The Block", "https://www.theblock.co/rss.xml", 0),
     ("Decrypt", "https://decrypt.co/feed", 0),
     ("Blockworks", "https://blockworks.co/feed", 0),
+    # Gobierno de EE. UU.: solo cuentan si hablan de cripto (GOV_SOURCES). El Tesoro no tiene RSS de notas
+    # de prensa que funcione (home.treasury.gov/rss.xml solo trae FAQs viejas): sus noticias llegan por Google News.
+    ("Casa Blanca", "https://www.whitehouse.gov/news/feed/", 3),
+    ("SEC", "https://www.sec.gov/news/pressreleases.rss", 2),
 ]
+GOV_SOURCES = ("Casa Blanca", "SEC")
 
 # Canales públicos de Telegram (versión web t.me/s/, sin login): (nombre, usuario del canal, peso base)
 TELEGRAM_CHANNELS = [
     ("Wu Blockchain", "wublockchainenglish", 1),
+    ("Watcher Guru", "WatcherGuru", 1),
 ]
+
+# Google News: una búsqueda '"<persona>" crypto when:1d' por político/famoso, como mucho una vez por hora
+GNEWS_URL = "https://news.google.com/rss/search"
+GNEWS_EVERY = 3600        # segundos entre búsquedas de la misma persona (hora guardada en la tabla meta)
+GNEWS_PER_QUERY = 15      # entradas que se miran de cada búsqueda
 
 # Watchlist: símbolo -> (id CoinGecko, [alias / nombres del proyecto])
 WATCHLIST = {
     "BTC":  ("bitcoin", ["bitcoin", "btc"]),
     "ETH":  ("ethereum", ["ethereum", "ether", "eth"]),
     "SOL":  ("solana", ["solana", "sol"]),
-    "HYPE": ("hyperliquid", ["hyperliquid", "hype"]),
+    "HYPE": ("hyperliquid", ["hyperliquid", "hype", "trade.xyz", "tradexyz", "hyperevm"]),
     "UNI":  ("uniswap", ["uniswap", "uni"]),
     "XRP":  ("ripple", ["xrp", "ripple"]),
     "DOGE": ("dogecoin", ["dogecoin", "doge"]),
@@ -116,6 +130,16 @@ WATCHLIST = {
     "XLM":  ("stellar", ["stellar", "xlm"]),
     "ALGO": ("algorand", ["algorand"]),
     # Stablecoins: cuentan como moneda mencionada, pero el aviso no lleva precio (siempre ~1 $)
+    # Alias en MAYÚSCULAS = distingue mayúsculas ("NEAR" sí, "near" no; "DOT" sí, "dot plot" no)
+    "ZEC":  ("zcash", ["zcash", "zec"]),
+    "LTC":  ("litecoin", ["litecoin", "ltc"]),
+    "DOT":  ("polkadot", ["polkadot", "DOT"]),
+    "AVAX": ("avalanche-2", ["avalanche", "avax"]),
+    "TON":  ("the-open-network", ["toncoin", "TON"]),
+    "TAO":  ("bittensor", ["bittensor", "tao"]),
+    "NEAR": ("near", ["near protocol", "NEAR"]),
+    "APT":  ("aptos", ["aptos"]),
+    "ICP":  ("internet-computer", ["internet computer", "icp"]),
     "USDC": ("usd-coin", ["usdc", "circle"]),
     "USDT": ("tether", ["tether", "usdt"]),
 }
@@ -156,7 +180,9 @@ CATALYSTS = [
     (r"\blist(s|ed|ing)\b|\bwill list\b|\bnew listing\b", 3, "listing", 1),
     (r"\bstrategic (bitcoin |crypto )?reserve\b", 3, "reserva estratégica", 1),
     (r"\bblackrock\b|\bfidelity\b|\bgrayscale\b|\bvanguard\b", 2, "institucional", 1),
-    (r"\bbanks?\b|\bbanking\b|\bclearing house\b|\bjpmorgan\b|\bswift\b|\bdtcc\b|\bvisa\b|\bmastercard\b|\bnasdaq\b|\bciti(group)?\b|\bgoldman\b", 4, "bancos / TradFi", 1),
+    (r"\bbanks?\b|\bbanking\b|\bclearing house\b|\bjpmorgan\b|\bswift\b|\bdtcc\b|\bvisa\b|\bmastercard\b|\bnasdaq\b|\bciti(group)?\b|\bgoldman\b|"
+     r"\bintercontinental exchange\b|\bnyse\b|\bcme group\b|\bequity stake\b|\bstrategic investment\b|"
+     r"\btakes? (an? )?(\$?[\d.,]+\s?(%|[mb]illion|[mb]n?) )?(equity |minority |majority )?stake\b", 4, "bancos / TradFi", 1),
     (r"\bselect(s|ed)\b|\bchose\b|\bchosen\b|\bpick(s|ed)\b|\bteams up\b|\bwins\b.*\b(contract|deal|role)\b", 2, "elegido / gana contrato", 1),
     (r"\btokeni[sz](ed|ation|e|es)\b|\brwa\b|\breal[- ]world assets?\b", 2, "tokenización / RWA", 1),
     (r"\bpartnership\b|\bpartners with\b|\bintegrat(es|ion)\b", 1, "partnership", 1),
@@ -179,6 +205,86 @@ TRUMP_CRYPTO_WORDS = r"\b(crypto\w*|bitcoin|btc|\w*coins?|tokens?|blockchain|sta
                      r"hyperliquid|solana|ethereum|xrp|world liberty)\b"
 TRUMP_MACRO_WORDS = r"\b(reserve|sec|fed|interest rates?|rate cuts?|tariffs?)\b"
 
+# ── Políticos de EE. UU. y famosos ──
+# (nombre que sale en la etiqueta, regex de alias). Se buscan solo en el TITULAR, sin distinguir mayúsculas.
+POLITICIANS = [
+    ("Trump", r"\b(president |donald )?trump\b(?!['’]s? (media|family|sons?|jr)|\s+(jr|media|coin|memecoin|token))"
+              r"(?<!eric trump)(?<!lara trump)(?<!barron trump)(?<!\$trump)"),
+    ("JD Vance", r"\bj\.? ?d\.? vance\b|\bvice president vance\b|\bvance\b"),
+    ("David Sacks", r"\bdavid sacks\b|\bczar sacks\b|\bsacks says\b"),
+    ("Scott Bessent", r"\bbessent\b"),
+    ("Howard Lutnick", r"\blutnick\b"),
+    ("Paul Atkins", r"\bpaul atkins\b|\b(sec|chair(man)?) atkins\b|\batkins\b"),
+    ("Jonathan Gould", r"\bjonathan gould\b|\bcomptroller gould\b|\bgould\b"),
+    ("Jerome Powell", r"\bjerome powell\b|\bpowell\b"),
+    ("Michael Selig", r"\bselig\b"),     # presidente de la CFTC desde el 22/12/2025
+    ("Cynthia Lummis", r"\blummis\b"),
+    ("Tim Scott", r"\b(sen(ator|\.)? )?tim scott\b"),
+    ("Bill Hagerty", r"\bhagerty\b"),
+    ("Elizabeth Warren", r"\belizabeth warren\b|\b(sen(ator|\.)? )warren\b|\bwarren\b(?! buffett| davidson)"),
+]
+POL_COIN_PTS, POL_ALT_EXTRA, POL_GENERIC_PTS = 6, 2, 2   # +6 con moneda, +2 si no es BTC/ETH, +2 si solo "crypto"
+POL_GENERIC_RE = r"\b(crypto\w*|bitcoin|btc|stablecoins?|digital assets?|blockchain|tokens?)\b"
+# Famosos: (nombre, regex, puntos si nombran una moneda concreta en el titular)
+FAMOUS = [
+    # muy raros
+    ("Stanley Druckenmiller", r"\bdruckenmiller\b", 8),
+    ("Larry Fink", r"\blarry fink\b|\bfink\b", 8),
+    ("Jamie Dimon", r"\bdimon\b", 8),
+    ("Ray Dalio", r"\bdalio\b", 8),
+    ("Paul Tudor Jones", r"\b(paul )?tudor jones\b", 8),
+    ("Bill Ackman", r"\backman\b", 8),
+    ("Peter Thiel", r"\bthiel\b", 8),
+    ("Warren Buffett", r"\bbuffett\b", 8),
+    # raros
+    ("Elon Musk", r"\belon musk\b|\bmusk\b", 6),
+    # habituales
+    ("Michael Saylor", r"\bsaylor\b", 2),
+    ("Cathie Wood", r"\bcathie wood\b", 2),
+    ("CZ", r"\bchangpeng zhao\b|(?-i:\bCZ\b)", 2),
+    ("Vitalik Buterin", r"\bvitalik\b|\bbuterin\b", 2),
+    ("Mark Cuban", r"\bmark cuban\b", 2),
+]
+FAMOUS_LOW_PAIRS = {("Elon Musk", "DOGE"): 2}   # Musk + DOGE es casi diario: solo +2
+PEOPLE_TAG_PREFIXES = ("🏛️", "⭐")              # etiquetas de políticos/famosos (sección propia del periódico)
+
+
+def people_in(title, people):
+    """Nombres de `people` que aparecen en el titular (en orden de la lista)."""
+    return [p[0] for p in people if re.search(p[1], title, re.I)]
+
+
+def people_bonus(item, coins):
+    """(puntos, [etiquetas]) por políticos y famosos que hablan de una moneda en el TITULAR."""
+    title = item["title"]
+    tcoins = [c for c in detect_coins(title, title) if c in coins and c in WATCHLIST and c not in STABLECOINS]
+    if not re.search(r"\bdogecoin\b", title, re.I):   # "DOGE" con un político suele ser el departamento de Musk
+        tcoins = [c for c in tcoins if c != "DOGE"]
+    pts, tags = 0, []
+    pols = people_in(title, POLITICIANS)
+    if item["source"].startswith("Trump"):   # el propio post de Trump ya tiene "Trump menciona proyecto"
+        pols = [p for p in pols if p != "Trump"]
+    if pols:
+        coin = next((c for c in tcoins if c != "BTC"), None)   # "bitcoin" a secas cuenta como genérico
+        if coin:
+            pts += POL_COIN_PTS + (POL_ALT_EXTRA if coin not in TOP_COINS else 0)
+            tags.append(f"🏛️ {pols[0]} menciona {coin}")
+        elif re.search(POL_GENERIC_RE, title, re.I):
+            pts += POL_GENERIC_PTS
+            tags.append(f"🏛️ {pols[0]} habla de cripto")
+    best = None
+    for name, rx, p in FAMOUS:
+        if tcoins and re.search(rx, title, re.I):
+            coin = tcoins[0]
+            p = FAMOUS_LOW_PAIRS.get((name, coin), p)
+            if best is None or p > best[0]:
+                best = (p, name, coin)
+    if best:   # varios famosos en el mismo titular: cuenta el de más peso
+        pts += best[0]
+        tags.append(f"⭐ {best[1]} menciona {best[2]}")
+    return pts, tags
+
+
 # Categoría de cada catalizador (la del catalizador con más peso manda)
 TAG_CAT = {
     "fee switch / fees": "Tokenomics", "buyback / burn": "Tokenomics", "token unlock": "Tokenomics",
@@ -193,7 +299,7 @@ TAG_CAT = {
 }
 
 # Fuentes primarias: el anuncio ES la noticia, no hace falta confirmación de terceros
-OFFICIAL_SOURCES = ("Binance Listing", "Trump (Truth Social)")
+OFFICIAL_SOURCES = ("Binance Listing", "Trump (Truth Social)", "Casa Blanca", "SEC")
 # Canales de Telegram: nunca oficiales, salen "sin confirmar" salvo que otra fuente hable de la misma moneda
 TELEGRAM_SOURCES = {name for name, _, _ in TELEGRAM_CHANNELS}
 
@@ -207,11 +313,11 @@ TREASURY_BUY_RE = (r"\b(adds?|buys|bought|purchases?|purchased|acquires?|acquire
                    r"\$?\d[\d,.]*\s?(k|m|b|mn|bn|million|billion)?\s+(worth of\s+|in\s+|of\s+)?" + _TREASURY_COINS + r"\b"
                    r"|\b" + _TREASURY_COINS + r"\s+treasur(y|ies)\b|\btreasury (company|companies|firm|firms|strategy)\b")
 # "Nasdaq-listed", "NYSE-listed"...: describe a la empresa, no es un listing ni noticia de TradFi
-LISTED_DESCRIPTOR_RE = r"\b[\w.]+-listed\b|\bpublicly (traded and )?listed\b"
+LISTED_DESCRIPTOR_RE = r"\b[\w.]+-listed\b|\bpublicly (traded and )?listed\b|\b(listed|trades?|traded) on (the )?(nasdaq|nyse)\b"
 # Rumores y predicciones: se penalizan (regla editorial: hecho ≠ opinión ≠ predicción)
 RUMOR_RE = r"\brumou?rs?\b|\breportedly\b|\bsources say\b|\bunconfirmed\b|\bspeculat"
 PREDICTION_RE = (r"price prediction|price forecast|price analysis|could (reach|hit|soar|explode)|"
-                 r"will (reach|hit) \$|\bto \$\d|\d+x (gains|potential)|next 100x|top \d+ (altcoins|coins|cryptos) to buy")
+                 r"will (reach|hit) \$|\bto \$\d|\d+x (gains|potential)|next 100x|\b\d{2,}x\b|top \d+ (altcoins|coins|cryptos) to buy")
 
 LABELS = {
     "seguir": ("🔥", "A SEGUIR"),
@@ -234,6 +340,10 @@ def db():
         title TEXT, p0 REAL, p24 REAL, p7 REAL)""")
     con.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
     con.execute("CREATE TABLE IF NOT EXISTS alerts (id TEXT PRIMARY KEY, ts INTEGER, sym TEXT, tags TEXT)")
+    con.execute("""CREATE TABLE IF NOT EXISTS congress_trades (
+        id TEXT PRIMARY KEY, chamber TEXT, member TEXT, bioguide TEXT, party TEXT, committees TEXT,
+        asset TEXT, ticker TEXT, kind TEXT, amount TEXT, amount_min INTEGER, tx_date TEXT, disc_date TEXT,
+        link TEXT, alerted INTEGER, first_seen INTEGER)""")
     return con
 
 
@@ -273,7 +383,13 @@ def start_tracking(con, it):
 
 
 CATALYST_TAGS = {tag for _, _, tag, _ in CATALYSTS}
-TITLE_ONLY_TAGS = {"regulación clave", "norma definitiva"}   # solo cuentan si están en el titular
+# Instituciones concretas (no "bank" genérico): bolsas, grandes bancos y tomas de participación
+TRADFI_BIG_RE = (r"\bintercontinental exchange\b|\bnyse\b|\bcme group\b|\bnasdaq\b|\bjpmorgan\b|\bgoldman\b|"
+                 r"\bciti(group)?\b|\bdtcc\b|\bswift\b|\bvisa\b|\bmastercard\b|\bblackrock\b|\bequity stake\b|"
+                 r"\bstrategic investment\b|\btakes? (an? )?(\$?[\d.,]+\s?(%|[mb]illion|[mb]n?) )?(equity |minority |majority )?stake\b")
+TITLE_ONLY_TAGS = {"regulación clave", "norma definitiva", "listing"}   # solo cuentan si están en el titular
+TITLE_ONLY_EXCEPT = {"listing": ("Binance Listing",)}   # ...salvo en estas fuentes (el anuncio de Binance es la noticia)
+TOP_COINS = ("BTC", "ETH")
 
 
 def main_coin(it):
@@ -380,12 +496,17 @@ def verification(con, it):
     return ("confirmado" if len(srcs) >= 2 else "sin confirmar"), len(srcs)
 
 
+def is_people(it):
+    """¿Noticia de un político o famoso (bloques B/C)? Va a la sección "Políticos, famosos y Congreso"."""
+    return any(t.startswith(PEOPLE_TAG_PREFIXES) or t == "Trump menciona proyecto" for t in it["tags"])
+
+
 def category(it):
     best = None
     for pattern, p, tag, _ in CATALYSTS:
         if tag in it["tags"] and (best is None or p > best[0]):
             best = (p, TAG_CAT.get(tag, "Mercado"))
-    if "Trump menciona proyecto" in it["tags"]:
+    if "Trump menciona proyecto" in it["tags"] or is_people(it):
         return "Política"
     return best[1] if best else "Mercado"
 
@@ -469,31 +590,267 @@ def fetch_telegram_channels():
     return items
 
 
-def collect():
+def fetch_google_news(con):
+    """Google News RSS: '"<persona>" crypto when:1d' para cada político y famoso, cada GNEWS_EVERY como mucho.
+    Solo se quedan los titulares que nombran a alguna de esas personas, y no los de medios que ya leemos por RSS."""
+    if con is None:
+        return []
+    own = tuple(n.lower() for n, _, _ in RSS_FEEDS)
+    people = [p[:2] for p in POLITICIANS] + [p[:2] for p in FAMOUS]
+    now = int(time.time())
+    items, seen_ids = [], set()
+    for name, _ in people:
+        key = f"gnews|{name}"
+        if now - int(meta_get(con, key) or 0) < GNEWS_EVERY:
+            continue
+        try:
+            r = requests.get(GNEWS_URL, params={"q": f'"{name}" crypto when:1d', "hl": "en-US", "gl": "US",
+                                                "ceid": "US:en"}, headers=UA, timeout=15)
+            if r.status_code in (403, 429, 503):
+                log(f"Google News bloquea ({r.status_code}): se reintenta en la próxima pasada")
+                break
+            r.raise_for_status()
+            for e in feedparser.parse(r.content).entries[:GNEWS_PER_QUERY]:
+                pub = (e.get("source") or {}).get("title", "") or ""
+                title = html.unescape(e.get("title", "")).strip()
+                if pub and title.endswith(" - " + pub):
+                    title = title[: -len(pub) - 3].strip()
+                link = e.get("link", "")
+                iid = f"gnews|{e.get('id') or link}"
+                if iid in seen_ids or pub.lower().startswith(own) or not people_in(title, people):
+                    continue
+                if not (re.search(POL_GENERIC_RE, title, re.I) or detect_coins(title)):
+                    continue   # la persona sale, pero el titular no habla de cripto (tipos, Irán, aranceles...)
+                seen_ids.add(iid)
+                when = e.get("published_parsed")
+                items.append({"id": iid, "source": f"{pub or 'Google News'} (Google News)", "title": title,
+                              "text": "", "link": link, "base": 0,
+                              "published": calendar.timegm(when) if when else None})
+            meta_set(con, key, str(now))
+        except Exception as ex:
+            log(f"Error en Google News ({name}): {ex}")
+    return items
+
+
+# ───────────────────────── CONGRESO (STOCK Act) ─────────────────────────
+# Cámara: espejo en GitHub de las declaraciones PTR del House Clerk (el mismo que usa congress_replicator;
+# housestockwatcher.com está caído). Senado: el espejo senate-stock-watcher-data dejó de actualizarse en 2021
+# y el buscador oficial (efdsearch.senate.gov) exige aceptar sus condiciones de uso: de momento no se usa.
+CONGRESS_HOUSE_URL = ("https://raw.githubusercontent.com/TattooedHead/house-stock-watcher-data"
+                      "/master/data/all_transactions.json")
+LEGISLATORS_URL = "https://unitedstates.github.io/congress-legislators/legislators-current.json"
+COMMITTEES_URL = "https://unitedstates.github.io/congress-legislators/committee-membership-current.json"
+# Comités que vigilan cripto: Servicios Financieros / Banca y Agricultura (CFTC), de las dos cámaras
+WATCH_COMMITTEES = {"HSBA": "Servicios Financieros", "HSAG": "Agricultura",
+                    "SSBK": "Banca (Senado)", "SSAF": "Agricultura (Senado)"}
+CONGRESS_MIN_BUY = 15_000          # compras por encima de esto avisan aunque no sea de los comités
+CONGRESS_ALERT_DAYS = 14           # solo se avisan declaraciones presentadas en los últimos N días
+CONGRESS_HOURS = 24                # revisar las declaraciones una vez al día
+CRYPTO_ETFS = {"IBIT", "FBTC", "GBTC", "ETHA", "BITB", "ARKB", "BTCO", "HODL", "EZBC", "BRRR", "BTCW",
+               "BITO", "ETHE", "FETH", "ETHW", "BSOL", "GSOL", "XRPR", "MSBT"}
+CRYPTO_STOCKS = {"COIN", "MSTR", "CRCL", "HOOD", "MARA", "RIOT"}
+CRYPTO_ASSET_RE = (r"\b(bitcoin|ethereum|ether|solana|xrp|dogecoin|litecoin|cryptocurrenc(y|ies)|crypto asset|"
+                   r"digital asset|coinbase|microstrategy|strategy inc|robinhood markets|circle internet|"
+                   r"marathon digital|mara holdings|riot platforms)\b")
+
+
+def _amount_min(s):
+    m = re.search(r"\$\s?([\d,]+)", s or "")
+    return int(m.group(1).replace(",", "")) if m else 0
+
+
+def _us_date(s):
+    try:
+        return datetime.strptime(s, "%m/%d/%Y").date().isoformat()
+    except Exception:
+        return ""
+
+
+def _norm(s):
+    import unicodedata
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z ]", " ", s)
+
+
+def legislator_index():
+    """{apellido normalizado: [(nombres posibles, bioguide, partido, cámara)]} desde congress-legislators."""
+    idx = {}
+    for p in requests.get(LEGISLATORS_URL, headers=UA, timeout=30).json():
+        n, term = p["name"], p["terms"][-1]
+        firsts = {_norm(n.get("first", "")).strip(), _norm(n.get("nickname", "")).strip()} - {""}
+        idx.setdefault(_norm(n["last"]).strip(), []).append(
+            (firsts, p["id"]["bioguide"], term.get("party", ""), term.get("type", "")))
+    return idx
+
+
+def match_legislator(idx, full_name, chamber="rep"):
+    """(bioguide, partido) de "Gilbert Cisneros" / "Hon. Marjorie Taylor Greene" / "Rob Bresnahan, Jr."."""
+    toks = [t for t in _norm(full_name).split() if t not in ("hon", "jr", "sr", "ii", "iii", "iv", "mr", "mrs", "ms", "dr")]
+    for i in range(len(toks)):   # apellidos compuestos: "taylor greene", "van orden"...
+        cands = [c for c in idx.get(" ".join(toks[i:]), []) if c[3] == chamber]
+        if not cands:
+            continue
+        first = toks[0] if i else ""
+        best = [c for c in cands if first in c[0]] or [c for c in cands if any(f[:1] == first[:1] for f in c[0])] or cands
+        if len(best) == 1 or first:
+            return best[0][1], best[0][2]
+    return None, ""
+
+
+def committee_index():
+    """{bioguide: [nombres de los comités vigilados]}."""
+    data = requests.get(COMMITTEES_URL, headers=UA, timeout=30).json()
+    out = {}
+    for code, name in WATCH_COMMITTEES.items():
+        for m in data.get(code, []):
+            out.setdefault(m["bioguide"], []).append(name)
+    return out
+
+
+def is_crypto_trade(r):
+    t = (r.get("ticker") or "").upper().strip()
+    return t in CRYPTO_ETFS or t in CRYPTO_STOCKS or \
+        re.search(CRYPTO_ASSET_RE, (r.get("asset_description") or "").lower()) is not None
+
+
+def fetch_congress_trades():
+    """Operaciones cripto (cripto directa, ETFs cripto, acciones cripto) declaradas en la Cámara."""
+    raw = requests.get(CONGRESS_HOUSE_URL, headers=UA, timeout=90).json()
+    idx, comms = legislator_index(), committee_index()
+    out = []
+    for r in raw:
+        if not is_crypto_trade(r):
+            continue
+        bio, party = match_legislator(idx, r.get("representative", ""))
+        ticker = (r.get("ticker") or "").upper().strip()
+        asset = re.sub(r"\s+", " ", r.get("asset_description") or "").strip()[:120]
+        key = "|".join(str(r.get(k, "")) for k in ("filing_id", "ticker", "transaction_date", "type", "amount", "owner"))
+        out.append({"id": key, "chamber": "Cámara", "member": r.get("representative", ""), "bioguide": bio or "",
+                    "party": {"Democrat": "D", "Republican": "R", "Independent": "I"}.get(party, party[:1]),
+                    "committees": ", ".join(comms.get(bio, [])), "asset": asset,
+                    "ticker": ticker if ticker not in ("", "--", "N/A") else "",
+                    "kind": {"Purchase": "compra", "Sale": "vende", "Sale (Full)": "vende", "Sale (Partial)": "vende",
+                             "Exchange": "canjea"}.get(r.get("type", ""), (r.get("type") or "").lower()),
+                    "amount": r.get("amount", ""), "amount_min": _amount_min(r.get("amount")),
+                    "tx_date": _us_date(r.get("transaction_date")), "disc_date": _us_date(r.get("disclosure_date")),
+                    "link": r.get("source_url", "")})
+    return out
+
+
+def congress_alert_worthy(t):
+    return (t["kind"] == "compra" and t["amount_min"] > CONGRESS_MIN_BUY) or bool(t["committees"])
+
+
+def format_congress_msg(t):
+    esc = lambda s: html.escape(s or "")
+    verb = {"compra": "compra", "vende": "vende"}.get(t["kind"], t["kind"])
+    what = t["ticker"] or t["asset"][:40]
+    lines = [f"🏛️💰 <b>{esc(t['member'])}</b> {verb} <b>{esc(what)}</b>",
+             f"{esc(t['asset'][:100])}",
+             f"Importe: {esc(t['amount'])}",
+             f"Partido: {esc(t['party'] or '?')} · {t['chamber']}" + (f" · Comité: {esc(t['committees'])}" if t["committees"] else ""),
+             f"Operación: {t['tx_date']} · Declarada: {t['disc_date']}"]
+    if t["link"]:
+        lines.append(f'<a href="{esc(t["link"])}">Ver declaración</a>')
+    return "\n".join(lines)
+
+
+def check_congress(con, dry, force=False):
+    """Una vez al día: guarda las operaciones cripto nuevas y avisa por Telegram de las que lo merecen.
+    La primera vez solo llena la tabla (sin avisos)."""
+    now = int(time.time())
+    if not force and now - int(meta_get(con, "congress_check") or 0) < CONGRESS_HOURS * 3600:
+        return 0
+    try:
+        trades = fetch_congress_trades()
+    except Exception as ex:
+        log(f"Error en declaraciones del Congreso: {ex}")
+        return 0
+    first = con.execute("SELECT COUNT(*) FROM congress_trades").fetchone()[0] == 0
+    known = {r[0] for r in con.execute("SELECT id FROM congress_trades")}
+    recent = (datetime.now(TZ).date() - timedelta(days=CONGRESS_ALERT_DAYS)).isoformat()
+    sent = 0
+    for t in trades:
+        if t["id"] in known:
+            continue
+        alerted = 0
+        if not first and t["disc_date"] >= recent and congress_alert_worthy(t):
+            if send(format_congress_msg(t), dry):
+                alerted = 1
+                sent += 1
+                log(f"Congreso: {t['member']} {t['kind']} {t['ticker'] or t['asset'][:30]}")
+            else:
+                continue   # Telegram falló: no se guarda, se reintenta mañana
+        con.execute("INSERT OR IGNORE INTO congress_trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (t["id"], t["chamber"], t["member"], t["bioguide"], t["party"], t["committees"], t["asset"],
+                     t["ticker"], t["kind"], t["amount"], t["amount_min"], t["tx_date"], t["disc_date"],
+                     t["link"], alerted, now))
+    con.commit()
+    meta_set(con, "congress_check", str(now))
+    log(f"Congreso: {len(trades)} operaciones cripto en la fuente, {sent} avisos.")
+    return sent
+
+
+def load_congress(con, days):
+    since = (datetime.now(TZ).date() - timedelta(days=days)).isoformat()
+    keys = ["id", "chamber", "member", "bioguide", "party", "committees", "asset", "ticker", "kind", "amount",
+            "amount_min", "tx_date", "disc_date", "link", "alerted", "first_seen"]
+    rows = con.execute("SELECT * FROM congress_trades WHERE disc_date >= ? ORDER BY disc_date DESC, tx_date DESC",
+                       (since,)).fetchall()
+    return [dict(zip(keys, r)) for r in rows]
+
+
+def collect(con=None):
     """Todas las fuentes, sin las noticias publicadas hace más de MAX_AGE_HOURS."""
     cutoff = time.time() - MAX_AGE_HOURS * 3600
-    items = fetch_binance_listings() + fetch_rss() + fetch_telegram_channels()
+    items = fetch_binance_listings() + fetch_rss() + fetch_telegram_channels() + fetch_google_news(con)
     return [it for it in items if not it.get("published") or it["published"] >= cutoff]
 
 # ───────────────────────── PUNTUACIÓN ─────────────────────────
 
-def detect_coins(text):
-    t = " " + re.sub(STABLE_PAIR_RE, " ", text.lower()) + " "
-    found = []
+def alias_in(alias, low, raw):
+    """¿Aparece el alias? En minúsculas = sin distinguir; con mayúsculas = tal cual (DOT, NEAR, TON)."""
+    if alias != alias.lower():
+        return re.search(r"(?<![A-Za-z0-9])" + re.escape(alias) + r"(?![A-Za-z0-9])", raw) is not None
+    return re.search(r"(?<![a-z0-9])" + re.escape(alias) + r"(?![a-z0-9])", low) is not None
+
+
+def coin_positions(title):
+    """{SYM: posición de su primera mención en el título} (watchlist y tickers $XYZ / (XYZ))."""
+    low = re.sub(STABLE_PAIR_RE + r"|\bavalanche of\b", lambda m: " " * len(m.group(0)), title.lower())
+    pos = {}
     for sym, (_, aliases) in WATCHLIST.items():
         for a in aliases:
-            if re.search(r"(?<![a-z0-9])" + re.escape(a) + r"(?![a-z0-9])", t):
-                found.append(sym)
-                break
+            raw = a != a.lower()
+            m = re.search(r"(?<![A-Za-z0-9])" + re.escape(a) + r"(?![A-Za-z0-9])" if raw else
+                          r"(?<![a-z0-9])" + re.escape(a) + r"(?![a-z0-9])", title if raw else low)
+            if m:
+                pos[sym] = min(pos.get(sym, m.start()), m.start())
+    for m in re.finditer(r"\$([A-Z]{2,10})\b|\(([A-Z]{2,10})\)", title):
+        pos.setdefault(m.group(1) or m.group(2), m.start())
+    return pos
+
+
+def detect_coins(text, title=None):
+    """Monedas mencionadas. Con `title`, la moneda principal es la PRIMERA que aparece en el título, aunque
+    el texto hable antes de BTC/ETH: "...crypto ETF market... as Zcash ETF tops $1B" -> ZEC, no BTC."""
+    t = " " + re.sub(STABLE_PAIR_RE + r"|\bavalanche of\b", " ", text.lower()) + " "
+    found = []
+    for sym, (_, aliases) in WATCHLIST.items():
+        if any(alias_in(a, t, text) for a in aliases):
+            found.append(sym)
     # Tickers tipo $XYZ o (XYZ) que no estén en la watchlist
     for m in re.findall(r"\$([A-Z]{2,10})\b|\(([A-Z]{2,10})\)", text):
         s = m[0] or m[1]
         if s not in found and s not in ("USD", "SEC", "ETF", "CEO", "US", "EU", "UK", "ICE", "ET",
                                         "EST", "UTC", "GMT", "CET", "NYSE", "CME", "FED", "FOMC",
-                                        "CPI", "GDP", "IPO", "AI", "OCC", "FDIC", "ABA", "OFAC",
+                                        "CPI", "GDP", "IPO", "AI", "OCC", "KST", "JST", "HKT", "SGT", "FDIC", "ABA", "OFAC",
                                         "CRCL", "COIN", "MSTR", "HOOD") \
                 and not (s in STABLECOINS and s.lower() not in t):
             found.append(s)
+    if title is not None:   # primero las del título, por orden de aparición; luego el resto
+        pos = coin_positions(title)
+        found.sort(key=lambda c: pos.get(c, 10 ** 6))   # sort estable: el resto mantiene su orden
     # Las stablecoins van al final: la moneda principal (precio, repetidos) debe ser la otra si la hay
     return [c for c in found if c not in STABLECOINS] + [c for c in found if c in STABLECOINS]
 
@@ -508,16 +865,24 @@ def score(item, ignore=()):
         if not re.search(TRUMP_MACRO_WORDS, low):
             return 0, [], 0, []
         pts = 0   # post solo macro (aranceles, Fed...): sin el peso de fuente oficial
+    if item["source"] in GOV_SOURCES and not re.search(TRUMP_CRYPTO_WORDS, low):
+        return 0, [], 0, []   # nota de la Casa Blanca / SEC que no habla de cripto
 
     cat_low = re.sub(LISTED_DESCRIPTOR_RE, " ", low)
-    title_low = item["title"].lower()
+    title_low = re.sub(LISTED_DESCRIPTOR_RE, " ", item["title"].lower())
+    # "ICE" solo en mayúsculas y como palabra = Intercontinental Exchange (dueña del NYSE), nunca ticker
+    if re.search(r"\bICE\b", item["title"]):
+        title_low += " intercontinental exchange"
+    if re.search(r"\bICE\b", text):
+        cat_low += " intercontinental exchange"
     for pattern, p, tag, s in CATALYSTS:
-        if re.search(pattern, title_low if tag in TITLE_ONLY_TAGS else cat_low):
+        title_only = tag in TITLE_ONLY_TAGS and item["source"] not in TITLE_ONLY_EXCEPT.get(tag, ())
+        if re.search(pattern, title_low if title_only else cat_low):
             pts += p
             tags.append(tag)
             sent += s
 
-    coins = [c for c in detect_coins(text) if c not in ignore]
+    coins = [c for c in detect_coins(text, item["title"]) if c not in ignore]
     if trump:   # en Trump solo cuentan monedas de la watchlist; "(BD)" es una empresa, no una moneda
         coins = [c for c in coins if c in WATCHLIST]
     # Acciones tokenizadas (ej. "Adds Adobe (ADBEB), Hewlett Packard (HPEB)..."): no son cripto
@@ -532,6 +897,18 @@ def score(item, ignore=()):
     if len(coins) >= 4:   # listas de monedas ("cita BTC, ETH, SOL, XLM..."): no es noticia de ninguna
         bonus = min(bonus, 2)
     pts += bonus
+
+    # Banco / bolsa TradFi + moneda concreta en el MISMO titular ("NYSE owner ICE teams up with Trade.xyz")
+    title_coins = [c for c in detect_coins(item["title"]) if c in coins and c in WATCHLIST
+                   and c not in TOP_COINS and c not in STABLECOINS]
+    if title_coins and re.search(TRADFI_BIG_RE, title_low):
+        pts += 2
+        tags.append(f"TradFi + {title_coins[0]} en titular")
+
+    p_pts, p_tags = people_bonus(item, coins)
+    pts += p_pts
+    tags += p_tags
+    sent += 1 if p_pts else 0
 
     if trump and coins:
         pts += 5
@@ -905,6 +1282,40 @@ def marcador_html(con):
             f'Se mide la moneda principal de cada alerta.</p><ul class="track">{"".join(recent)}</ul>')
 
 
+CONGRESS_PERIODICO_DAYS = 60   # declaraciones del Congreso que salen en el periódico
+
+
+def politicos_html(con, people_news):
+    """Sección "Políticos, famosos y Congreso": noticias con 🏛️/⭐ + operaciones cripto declaradas."""
+    people_news = sorted(people_news, key=lambda n: (-n["score"], -n["ts"]))[:15]
+    lis = []
+    for n in people_news:
+        who = " · ".join(html.escape(t) for t in n["tags"] if t.startswith(PEOPLE_TAG_PREFIXES))
+        more = f' · y {len(n["more"])} más sobre esto' if n["more"] else ""
+        lis.append(f'<li><span class="score s">{n["score"]}</span>{LABELS[n["label"]][0]} {title_html(n, "span")}'
+                   f' <small>{who} · {html.escape(n["source"])} · {hace(n["ts"])}{more}</small></li>')
+    news_html = "".join(lis) or '<li class="empty">Ningún político ni famoso ha hablado de una moneda en estas horas.</li>'
+    trades = load_congress(con, CONGRESS_PERIODICO_DAYS)
+    trs = []
+    for t in trades[:15]:
+        cls = "up" if t["kind"] == "compra" else "down" if t["kind"] == "vende" else ""
+        what = html.escape(t["ticker"] or t["asset"][:30])
+        member = html.escape(t["member"])
+        if t["link"]:
+            member = f'<a href="{html.escape(t["link"])}" target="_blank" rel="noopener">{member}</a>'
+        flag = " 🔔" if t["alerted"] else ""
+        trs.append(f'<tr><td>🏛️💰 {member} <small>({html.escape(t["party"] or "?")})</small>{flag}</td>'
+                   f'<td class="res {cls}">{html.escape(t["kind"])}</td><td><b>{what}</b></td>'
+                   f'<td>{html.escape(t["amount"])}</td><td>{t["tx_date"]}</td><td>{t["disc_date"]}</td>'
+                   f'<td>{html.escape(t["committees"] or "–")}</td></tr>')
+    trades_html = (f'<table><thead><tr><th>Congresista</th><th></th><th>Activo</th><th>Importe</th>'
+                   f'<th>Operación</th><th>Declarada</th><th>Comité</th></tr></thead><tbody>{"".join(trs)}</tbody></table>'
+                   if trs else f'<p class="empty">Ninguna operación cripto declarada en los últimos {CONGRESS_PERIODICO_DAYS} días.</p>')
+    return (f'<ul class="pol">{news_html}</ul><h5>Congresistas que compran o venden cripto '
+            f'<small>(Cámara de Representantes, STOCK Act · últimos {CONGRESS_PERIODICO_DAYS} días · '
+            f'🔔 = avisado por Telegram)</small></h5>{trades_html}')
+
+
 def build_periodico(con):
     news = load_news(con, PERIODICO_HOURS)
     for n in news:
@@ -927,7 +1338,7 @@ def build_periodico(con):
         f'<li><span class="score s">{n["score"]}</span>{title_html(n, "span")}'
         f' <small>{html.escape(n["source"])} · {hace(n["ts"])}'
         + (f' · y {len(n["more"])} más sobre esto' if n["more"] else "") + '</small></li>'
-        for n in by["breve"][:30]) or '<li class="empty">Sin breves.</li>'
+        for n in by["breve"][:30] if not is_people(n)) or '<li class="empty">Sin breves.</li>'
 
     now_dt = datetime.now(TZ)
     fecha = f"{DIAS[now_dt.weekday()].capitalize()}, {now_dt.day} de {MESES[now_dt.month - 1]} de {now_dt.year}"
@@ -941,7 +1352,8 @@ def build_periodico(con):
         seguir=section("seguir", "🔥 A seguir", "Puntuación alta y el precio todavía no ha reaccionado."),
         ojo=section("ojo", "👀 Échale un ojo", "Relevante, pero menos clara."),
         movido=section("movido", "⚠️ Ya se ha movido", f"El precio ya se movió ±{MOVED_1H_PCT}% en 1 h o ±{MOVED_24H_PCT}% en 24 h. Probablemente tarde.", 8),
-        breves=breves, horas=PERIODICO_HOURS, marcador=marcador_html(con), agenda=agenda_html())
+        breves=breves, horas=PERIODICO_HOURS, marcador=marcador_html(con), agenda=agenda_html(),
+        politicos=politicos_html(con, [n for n in news if is_people(n)]))
     os.makedirs(os.path.dirname(PERIODICO_PATH) or ".", exist_ok=True)
     tmp = PERIODICO_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -1124,6 +1536,16 @@ h3{{font:700 20px/1.2 "Playfair Display",serif;margin:8px 0 6px}}
 .more>span{{font:600 11px "IBM Plex Mono",monospace;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}}
 .more ul{{list-style:none;margin:4px 0 0;padding:0}} .more li{{margin:2px 0;line-height:1.35}}
 .more small{{color:var(--muted);font-family:"IBM Plex Mono",monospace;font-size:11px}}
+.politicos{{margin-top:18px;border-top:3px double var(--rule);padding-top:10px}}
+.politicos h4{{font:900 22px "Playfair Display",serif;margin:0 0 6px}}
+.politicos h5{{font:700 16px "Playfair Display",serif;margin:14px 0 6px}}
+.politicos h5 small{{font:11px "IBM Plex Mono",monospace;color:var(--muted)}}
+.pol{{list-style:none;margin:0;padding:0}}
+.pol li{{padding:6px 0;border-bottom:1px dotted var(--soft);display:flex;gap:4px;align-items:baseline;flex-wrap:wrap}}
+.pol small{{color:var(--muted);font:11px "IBM Plex Mono",monospace}}
+.politicos table{{width:100%;border-collapse:collapse;font:12px "IBM Plex Mono",monospace;display:block;overflow-x:auto}}
+.politicos th,.politicos td{{text-align:left;padding:5px 8px;border-bottom:1px solid var(--soft);white-space:nowrap}}
+.politicos th{{border-bottom:2px solid var(--rule);font-weight:600}}
 footer{{margin-top:24px;font:11px "IBM Plex Mono",monospace;color:var(--muted);text-align:center}}
 @media (max-width:900px){{.grid{{grid-template-columns:1fr}}.col{{border-right:0;padding:14px 0;border-bottom:1px solid var(--rule)}}
   .breves ul{{columns:1}}}}
@@ -1136,6 +1558,7 @@ footer{{margin-top:24px;font:11px "IBM Plex Mono",monospace;color:var(--muted);t
 <div class="agenda"><h4>📅 Agenda</h4>{agenda}</div>
 <div class="portada">{portada}</div>
 <div class="grid">{seguir}{ojo}{movido}</div>
+<div class="politicos"><h4>🏛️ Políticos, famosos y Congreso</h4>{politicos}</div>
 <div class="breves"><h4>Breves</h4><ul>{breves}</ul></div>
 <div class="marcador"><h4>📊 Marcador de aciertos</h4>{marcador}</div>
 <footer>Generado por crypto_news_alert.py · se actualiza solo · no es consejo financiero</footer>
@@ -1149,7 +1572,7 @@ def log(msg):
 
 def cycle(con, dry, first=False):
     new = []
-    for it in collect():
+    for it in collect(con):
         if not is_seen(con, it["id"]):
             mark_seen(con, it["id"])
             new.append(it)
@@ -1172,6 +1595,7 @@ def cycle(con, dry, first=False):
             log(msg)
     con.commit()
     update_tracking(con)
+    check_congress(con, dry)   # una vez al día (la primera vez, sin avisos)
     if not first:
         morning_edition(con, dry)
     build_periodico(con)
