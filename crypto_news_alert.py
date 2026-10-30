@@ -249,6 +249,11 @@ FAMOUS_LOW_PAIRS = {("Elon Musk", "DOGE"): 2}   # Musk + DOGE es casi diario: so
 PEOPLE_TAG_PREFIXES = ("🏛️", "⭐")              # etiquetas de políticos/famosos (sección propia del periódico)
 
 
+# Oración de relativo hasta la siguiente coma/punto ("who sued Ripple", "whose firm holds XRP").
+# No incluye "that": en "Musk says that Dogecoin..." la moneda sí es lo que dice la persona.
+RELATIVE_CLAUSE_RE = r"\b(who|whom|whose|which)\b[^,;:.!?]*"
+
+
 def people_in(title, people):
     """Nombres de `people` que aparecen en el titular (en orden de la lista)."""
     return [p[0] for p in people if re.search(p[1], title, re.I)]
@@ -257,7 +262,10 @@ def people_in(title, people):
 def people_bonus(item, coins):
     """(puntos, [etiquetas]) por políticos y famosos que hablan de una moneda en el TITULAR."""
     title = item["title"]
-    tcoins = [c for c in detect_coins(title, title) if c in coins and c in WATCHLIST and c not in STABLECOINS]
+    # Las monedas dentro de una oración de relativo describen a otra persona, no lo que dice el político:
+    # "Trump Taps Jay Clayton, the SEC Chair Who Sued Ripple, to Lead AI Push" -> sin XRP
+    main = re.sub(RELATIVE_CLAUSE_RE, " ", title, flags=re.I)
+    tcoins = [c for c in detect_coins(main, main) if c in coins and c in WATCHLIST and c not in STABLECOINS]
     if not re.search(r"\bdogecoin\b", title, re.I):   # "DOGE" con un político suele ser el departamento de Musk
         tcoins = [c for c in tcoins if c != "DOGE"]
     pts, tags = 0, []
